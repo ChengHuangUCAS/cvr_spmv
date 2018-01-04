@@ -34,15 +34,12 @@ typedef struct csr{
 typedef struct cvr{
 	int **val_ptr;
 	int **colidx_ptr;
-	int *rec;
-	int lr_rec;
-	int *tail;
+	int **rec_ptr;
+	int *lrrec_ptr;
+	int **tail_ptr;
 	int ncol;
 	int nrow;
 	int nnz;
-	int *valID;
-	int *rowID;
-	int *count;
 }cvr_t; // compressed vactorization-oriented format
 
 // auxiliary function used in qsort
@@ -56,6 +53,27 @@ int func_cmp(const void *a, const void *b){
 	}
 }
 
+// auxiliary function to get row number
+int func_get_row(int valID, csr_t *csr){
+	int start = 0, end = csr->nrow;
+	int mid = (start + end) / 2;
+	while(start <= end){
+		if(csr->row_ptr[mid] > valID){
+			end = mid - 1;
+		}else if(csr->row_ptr[mid+1] < valID){
+			start = mid + 1;
+		}else{
+			while(csr->row_ptr[mid] == csr->row_ptr[mid+1]){
+				mid++;
+			}
+			return mid;
+		}
+		mid = (start + end) / 2;
+	}
+	printf("*** ERROR: a bug occured in func_get_row ***");
+	exit(ERROR);
+}
+
 
 // 0-based Matrix Market format -> CSR format
 int read_matrix(csr_t *csr, char *filename);
@@ -65,6 +83,7 @@ int preprocess(cvr_t *cvr, csr_t *csr);
 int spmv(float *y, float *x, cvr_t *cvr);
 
 int n_threads = 4;
+int n_lanes = 16;
 int n_iterations = 10;
 
 int main(int argc, char **argv){
@@ -278,14 +297,40 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 	cvr->ncol = csr->ncol;
 	cvr->nrow = csr->nrow;
 	cvr->nnz = csr->nnz;
-	cvr->lr_rec = -1;
+	cvr->lrrec_ptr = (int *)malloc(n_threads * sizeof(int));
 	cvr->val_ptr = (int **)malloc(n_threads * sizeof(int *));
 	cvr->colidx_ptr = (int **)malloc(n_threads * sizeof(int *));
-	cvr->rec = (int *)malloc(2 * cvr->nrow * sizeof(int));
-	cvr->tail = (int *)malloc(n_threads * sizeof(int));
-	cvr->valID = (int *)malloc(n_threads * sizeof(int));
-	cvr->rowID = (int *)malloc(n_threads * sizeof(int));
-	cvr->count = (int *)malloc(n_threads * sizeof(int));
+	cvr->rec_ptr = (int **)malloc(n_threads * sizeof(int *));
+	cvr->tail_ptr = (int **)malloc(n_threads * sizeof(int *));
+
+	int nnz_per_thread = cvr->nnz / n_threads;
+	int change_thread_nnz = cvr->nnz % n_threads;
+
+	#pragma omp parallel num_threads(n_threads)
+	{
+		int thread_num = omp_get_thread_num();
+
+		int thread_start, thread_end;
+		int thread_start_row, thread_end_row;
+		//thread whose thread_num is less than change_thread_nnz handle one more non-zero number than the others
+		if(thread_num < change_thread_nnz){
+			thread_start = thread_num * nnz_per_thread + thread_num * 1;
+			thread_end = (thread_num + 1) * nnz_per_thread + (thread_num + 1) * 1;
+		}else{
+			thread_start = thread_num * nnz_per_thread + change_thread_nnz * 1;
+			thread_end = (thread_num + 1) * nnz_per_thread + change_thread_nnz * 1;
+		}
+		thread_start_row = func_get_row(thread_start, csr);
+		thread_end_row = func_get_row(thread_end, csr);
+
+		int *valID = (int *)malloc(n_lanes * sizeof(int));
+		int *rowID = (int *)malloc(n_lanes * sizeof(int));
+		int *count = (int *)malloc(n_lanes * sizeof(int));
+	}
+
+	//-------------------------------
+	//  code under here is wrong
+	//-------------------------------
 
 	int i;
 	int nnz_per_thread = cvr->nnz / n_threads + 1;
