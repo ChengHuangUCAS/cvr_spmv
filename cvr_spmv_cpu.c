@@ -70,7 +70,7 @@ int func_get_row(int valID, csr_t *csr){
 		}
 		mid = (start + end) / 2;
 	}
-	printf("*** ERROR: a bug occured in func_get_row ***");
+	printf("*** ERROR: a bug occured in func_get_row ***\n");
 	exit(ERROR);
 }
 
