@@ -32,7 +32,7 @@ typedef struct csr{
 }csr_t; // compressed sparse row format
 
 typedef struct cvr{
-	int **val_ptr;
+	float **val_ptr;
 	int **colidx_ptr;
 	int **rec_ptr;
 	int *lrrec_ptr;
@@ -63,7 +63,7 @@ int func_get_row(int valID, csr_t *csr){
 		}else if(csr->row_ptr[mid+1] < valID){
 			start = mid + 1;
 		}else{
-			while(csr->row_ptr[mid] == csr->row_ptr[mid+1]){
+			while(mid < csr->nrow && csr->row_ptr[mid] == csr->row_ptr[mid+1]){
 				mid++;
 			}
 			return mid;
@@ -72,6 +72,24 @@ int func_get_row(int valID, csr_t *csr){
 	}
 	printf("*** ERROR: a bug occured in func_get_row ***\n");
 	exit(ERROR);
+}
+
+// auxiliary function to get AND result
+int func_AND(int *val, int n){
+	int result = 1;
+	for(int i = 0; i < n; i++){
+		result = result && val[i];
+	}
+	return result;
+}
+
+// auxiliary function to get average count
+int func_average(int *count, int n){
+	int sum = 0;
+	for(int i = 0; i < n; i++){
+		sum += count[i];
+	}
+	return sum / n;
 }
 
 
@@ -298,7 +316,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 	cvr->nrow = csr->nrow;
 	cvr->nnz = csr->nnz;
 	cvr->lrrec_ptr = (int *)malloc(n_threads * sizeof(int));
-	cvr->val_ptr = (int **)malloc(n_threads * sizeof(int *));
+	cvr->val_ptr = (float **)malloc(n_threads * sizeof(float *));
 	cvr->colidx_ptr = (int **)malloc(n_threads * sizeof(int *));
 	cvr->rec_ptr = (int **)malloc(n_threads * sizeof(int *));
 	cvr->tail_ptr = (int **)malloc(n_threads * sizeof(int *));
@@ -310,89 +328,146 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 	{
 		int thread_num = omp_get_thread_num();
 
-		int thread_start, thread_end;
-		int thread_start_row, thread_end_row;
+		int thread_start, thread_end, thread_nnz;
+		int thread_start_row, thread_end_row, thread_nrow;
+
 		//thread whose thread_num is less than change_thread_nnz handle one more non-zero number than the others
+		//both No.thread_start non-zero and No.thread_end non-zero are handled by this thread
 		if(thread_num < change_thread_nnz){
 			thread_start = thread_num * nnz_per_thread + thread_num * 1;
-			thread_end = (thread_num + 1) * nnz_per_thread + (thread_num + 1) * 1;
+			thread_end = (thread_num + 1) * nnz_per_thread + (thread_num + 1) * 1 - 1;
 		}else{
 			thread_start = thread_num * nnz_per_thread + change_thread_nnz * 1;
-			thread_end = (thread_num + 1) * nnz_per_thread + change_thread_nnz * 1;
+			thread_end = (thread_num + 1) * nnz_per_thread + change_thread_nnz * 1 - 1;
 		}
+		thread_nnz = thread_end - thread_start + 1;
 		thread_start_row = func_get_row(thread_start, csr);
 		thread_end_row = func_get_row(thread_end, csr);
+		thread_nrow = thread_end_row - thread_start_row + 1;
+		
+		cvr->val_ptr[thread_num] = (float *)malloc(thread_nnz * sizeof(float));
+		cvr->colidx_ptr[thread_num] = (int *)malloc(thread_nnz * sizeof(int));
+		cvr->rec_ptr[thread_num] = (int *)malloc(thread_nrow * 2 * sizeof(int));
+		cvr->tail_ptr[thread_num] = (int *)malloc(n_lanes * sizeof(int));
 
-		int *valID = (int *)malloc(n_lanes * sizeof(int));
-		int *rowID = (int *)malloc(n_lanes * sizeof(int));
-		int *count = (int *)malloc(n_lanes * sizeof(int));
-	}
+		int *thread_valID = (int *)malloc(n_lanes * sizeof(int));
+		int *thread_rowID = (int *)malloc(n_lanes * sizeof(int));
+		int *thread_count = (int *)malloc(n_lanes * sizeof(int));
 
-	//-------------------------------
-	//  code under here is wrong
-	//-------------------------------
-
-	int i;
-	int nnz_per_thread = cvr->nnz / n_threads + 1;
-	for(i = 0; i < n_threads; i++){
-		cvr->val_ptr[i] = (int *)malloc(nnz_per_thread * sizeof(int));
-		cvr->colidx_ptr[i] = (int *)malloc(nnz_per_thread * sizeof(int));
-	}
-
-	//initialize tracking vectors
-	int rs = 0;
-	int rec_idx = 0;
-	for(i = 0; i < n_threads; i++){
-		while(rs < cvr->nrow && csr->row_ptr[rs] == csr->row_ptr[rs+1]){ //skip empty rows
-			rs++;
+		//initialize 
+		int thread_rs = thread_start_row;
+		for(int i = 0; i < n_lanes; i++){
+			while(thread_rs <= thread_end_row && csr->row_ptr[thread_rs+1] == csr->row_ptr[thread_rs]){
+				thread_rs++;
+			}
+			thread_rowID[i] = thread_rs;
+			thread_valID[i] = csr->row_ptr[thread_rs];
+			thread_count[i] = csr->row_ptr[thread_rs+1] - csr->row_ptr[thread_rs];
+			if(thread_rs == thread_start_row){
+				thread_valID[i] = thread_start;
+				thread_count[i] = csr->row_ptr[thread_rs+1] - thread_start;
+			}
+			if(thread_rs == thread_end_row){
+				thread_count[i] = thread_end + 1 - thread_valID[i];
+			}
+			if(thread_rs > thread_end_row){
+				thread_rowID[i] = -1;
+				thread_valID[i] = -1;
+				thread_count[i] = 0;
+			}
+			thread_valID[i] = thread_valID[i] - thread_start;
+			thread_rs++;
 		}
-		cvr->valID[i] = csr->row_ptr[rs];
-		cvr->rowID[i] = rs;
-		cvr->count[i] = csr->row_ptr[rs+1] - csr->row_ptr[rs];
-		if(csr->row_ptr[rs+1] == csr->nnz){ //if this is the last row
-			n_threads = i + 1;
-			break;
+		//because the behavior of func_get_row(), 
+		//thread_start_row and thread_end_row contain at least one non-zero
+		//IF1: if the number of rows is less than n_lanes
+		if(thread_rs > thread_end_row){
+			for(int i = 0; i < n_lanes; i++){
+				cvr->tail_ptr[thread_num][i] = thread_rowID[i];
+			}
 		}
-		rs++;
-	}
 
-	if(csr->row_ptr[rs+1] != csr->nnz){ //conversion and tracker feeding period
-		omp_set_num_threads(n_threads);
-		omp_set_dynamic(0);
-		#pragma omp parallel
-		{
-			int thread_num = omp_get_thread_num();
-			int j = 0;
-			do{ //conversion
-				cvr->val_ptr[thread_num][j] = csr->val[cvr->valID[thread_num]];
-				cvr->colidx_ptr[thread_num][j] = csr->col_idx[cvr->valID[thread_num]];
-				cvr->valID[thread_num]++;
-				cvr->count[thread_num]--;
-				if(0 == cvr->count[thread_num]){ //tracker feeding is needed
-					#pragma omp critical //update rs
-					{
-						if(rs == cvr->nrow){ //other threads reached the last row
-							break;
+		int rec_idx = 0;
+		cvr->lrrec_ptr[thread_num] = -1;
+		//WARNING: condition of this for loop is uncertain
+		//well, it is certain now. but i'm not that sure
+		// FOR1
+		for(int i = 0; i <= (thread_nnz + n_lanes - 1) / n_lanes; i++){
+			// IF2: if some lanes are empty
+			if(0 == func_AND(thread_count, n_lanes)){
+				// FOR2: iterate over all lanes, feed or steal
+				for(int j = 0; j < n_lanes; j++){
+					// IF3
+					if(0 == thread_count[j]){
+						thread_rs++;
+						//EQUAL is included because thread_end_row can be reached
+						while(thread_rs <= thread_end_row && csr->row_ptr[thread_rs+1] == csr->row_ptr[thread_rs]){
+							thread_rs++;
 						}
-						do{ //skip empty rows
-							rs++;
-						}while(rs < cvr->nrow && csr->row_ptr[rs] == csr->row_ptr[rs+1]);
-						if(rs == cvr->nrow){ //the first thread reached the last row
-							cvr->lr_rec = cvr->valID[thread_num];
-							break;
-						}else{
-							cvr->rowID[thread_num] = rs;
+
+						//recording
+						cvr->rec_ptr[thread_num][rec_idx++] = i * n_lanes + j; //valID which triggers write back
+						cvr->rec_ptr[thread_num][rec_idx++] = thread_rowID[j]; //write back position
+
+						//tracker feeding
+						if(thread_rs <= thread_end_row){
+							thread_rowID[j] = thread_rs;
+							thread_valID[j] = csr->row_ptr[thread_rs];
+							thread_count[j] = csr->row_ptr[thread_rs+1] - csr->row_ptr[thread_rs];
+							//ELSE1: if the number of rows is more than n_lanes, 
+							//the lane deals thread_end_row must reaches here
+							if(thread_rs == thread_end_row){
+								thread_count[j] = thread_end + 1 - thread_valID[j];
+								for(int k = 0; k < n_lanes; k++){
+									cvr->tail_ptr[thread_num][k] = thread_rowID[k];
+								}
+							}
+						}else{//tracker stealing, thread_rs is not important since then
+							if(-1 == cvr->lrrec_ptr){
+								cvr->lrrec_ptr[thread_num] = i * n_lanes + j;
+							}
+
+							int average = func_average(thread_count, n_lanes);
+							//if reminding number is less than n_lanes
+							if(0 == average){
+								thread_valID[j] = -1;
+								thread_count[j] = 1;
+							}else{
+								int candidate = 0;
+								//get candidate to steal
+								for( ; candidate < n_lanes; candidate++){
+									if(thread_count[candidate] > average){
+										break;
+									}
+								}
+								thread_rowID[j] = candidate;
+								thread_valID[j] = thread_valID[candidate];
+								thread_count[j] = thread_count[candidate] - average;
+								thread_rowID[candidate] = candidate;
+								thread_valID[candidate] = thread_valID[candidate] + thread_count[j];
+								thread_count[candidate] = thread_count[candidate] - thread_count[j];
+							}
 						}
-					}
-					cvr->valID[thread_num] = csr->row_ptr[cvr->rowID[thread_num]];
-					cvr->count[thread_num] = csr->row_ptr[cvr->rowID[thread_num]+1] - csr->row_ptr[cvr->rowID[thread_num]];
+					} //ENDIF3
+				} //ENDFOR2
+			} //ENDIF2
+
+			//continue converting
+			int gather_base = 0;
+			for(int i = 0; i < n_lanes; i++){
+				if(-1 == thread_valID[i]){
+					cvr->val_ptr[thread_num][i+gather_base] = 0;
+					cvr->colidx_ptr[thread_num][i+gather_base] = cvr->colidx_ptr[thread_num][i+gather_base]-1;
+				}else{
+					cvr->val_ptr[thread_num][i+gather_base] = csr->val[thread_valID[i]];
+					cvr->colidx_ptr[thread_num][i+gather_base] = csr->col_idx[thread_valID[i]];
 				}
-				j++;
-			}while(1);
-		}
-	}
-
-	//tracker stealing period
+				thread_valID[i]++;
+				thread_count[i]--;
+			}
+			gather_base += n_lanes;
+		} //ENDFOR1
+	} //ENDPRAGMA
 
 	printf("OK!\n");
 
