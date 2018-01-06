@@ -40,7 +40,7 @@ typedef struct cvr{
 	int ncol;
 	int nrow;
 	int nnz;
-}cvr_t; // compressed vactorization-oriented format
+}cvr_t; // compressed vactorization-oriented sparse row format
 
 // auxiliary function used in qsort
 int func_cmp(const void *a, const void *b){
@@ -133,6 +133,10 @@ int main(int argc, char **argv){
 
 	x = (float *)malloc(cvr.ncol * sizeof(float));
 	y = (float *)malloc(cvr.ncol * sizeof(float));
+	for(i = 0; i < cvr->ncol; i++){
+		x[i] = i % 1000;
+	}
+	memset(y, 0, cvr.ncol * sizeof(int));
 
 	if(spmv(y, x, &cvr)){
 		printf("ERROR occured in function spmv()\n");
@@ -478,6 +482,32 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 
 
 int spmv(float *y, float *x, cvr_t *cvr){
+	int iteration;
+	for(iteration = 0; iteration < n_iterations; iteration++){
+		#pragma omp parallel num_threads(n_threads)
+		{
+			int thread_num = omp_get_thread_num();
+
+			//exactly the same code as in preprocess()
+			int thread_start, thread_end, thread_nnz;
+			int thread_start_row, thread_end_row, thread_nrow;
+			if(thread_num < change_thread_nnz){
+				thread_start = thread_num * nnz_per_thread + thread_num * 1;
+				thread_end = (thread_num + 1) * nnz_per_thread + (thread_num + 1) * 1 - 1;
+			}else{
+				thread_start = thread_num * nnz_per_thread + change_thread_nnz * 1;
+				thread_end = (thread_num + 1) * nnz_per_thread + change_thread_nnz * 1 - 1;
+			}
+			thread_nnz = thread_end - thread_start + 1;
+			thread_start_row = func_get_row(thread_start, csr);
+			thread_end_row = func_get_row(thread_end, csr);
+			thread_nrow = thread_end_row - thread_start_row + 1;
+
+			//store the temporary result of this thread
+			int *thread_y = (int *)malloc(cvr->ncol * sizeof(int));
+			memset(thread_y, 0, cvr->ncol * sizeof(int));
+		}
+	}
 
 	return OK;
 }
