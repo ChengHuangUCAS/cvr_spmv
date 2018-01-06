@@ -15,7 +15,7 @@ typedef struct triple{
 	float val;
 }triple_t;
 
-typedef coo{
+typedef struct coo{
 	triple_t *triple;
 	int ncol;
 	int nrow;
@@ -76,8 +76,8 @@ int func_get_row(int valID, csr_t *csr){
 
 // auxiliary function to get AND result
 int func_AND(int *val, int n){
-	int result = 1;
-	for(int i = 0; i < n; i++){
+	int result = 1, i;
+	for(i = 0; i < n; i++){
 		result = result && val[i];
 	}
 	return result;
@@ -85,8 +85,8 @@ int func_AND(int *val, int n){
 
 // auxiliary function to get average count
 int func_average(int *count, int n){
-	int sum = 0;
-	for(int i = 0; i < n; i++){
+	int sum = 0, i;
+	for(i = 0; i < n; i++){
 		sum += count[i];
 	}
 	return sum / n;
@@ -116,7 +116,7 @@ int main(int argc, char **argv){
 	char *filename = argv[1];
 	if(argc > 2){
 		n_threads = atoi(argv[2]);
-		if(4 == argv){
+		if(4 == argc){
 			n_iterations = atoi(argv[3]);
 		}
 	}
@@ -131,8 +131,8 @@ int main(int argc, char **argv){
 		return ERROR;
 	}
 
-	x = (float *)malloc(cvr->ncol * sizeof(float));
-	y = (float *)malloc(cvr->ncol * sizeof(float));
+	x = (float *)malloc(cvr.ncol * sizeof(float));
+	y = (float *)malloc(cvr.ncol * sizeof(float));
 
 	if(spmv(y, x, &cvr)){
 		printf("ERROR occured in function spmv()\n");
@@ -194,11 +194,11 @@ int read_matrix(csr_t *csr, char *filename){
 
 	//number of rows, columns and non-zeros in matrix
 	coo_t coo;
-	sscanf(buffer, "%d %d %d", &coo->nrow, &coo->ncol, &coo->nnz);
+	sscanf(buffer, "%d %d %d", &coo.nrow, &coo.ncol, &coo.nnz);
 	if(symmetry_symmetric){
-		coo->nnz *= 2;
+		coo.nnz *= 2;
 	}
-	coo->triple = (triple_t *)malloc(coo->nnz * sizeof(triple_t)); //this pointer is useless out of this function. remember to free it.
+	coo.triple = (triple_t *)malloc(coo.nnz * sizeof(triple_t)); //this pointer is useless out of this function. remember to free it.
 
 	//MMF -> coordinate format
 	int i = 0;
@@ -206,12 +206,12 @@ int read_matrix(csr_t *csr, char *filename){
 		if(field_pattern){
 			while(!feof(fp)){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d", &coo->triple[i].x, &coo->triple[i].y);
-				coo->triple[i].val = 1;
-				if(coo->triple[i].x != coo->triple[i].y){
-					coo->triple[i+1].x = coo->triple[i].y;
-					coo->triple[i+1].y = coo->triple[i].x;
-					coo->triple[i+1].val = 1;
+				sscanf(buffer, "%d %d", &coo.triple[i].x, &coo.triple[i].y);
+				coo.triple[i].val = 1;
+				if(coo.triple[i].x != coo.triple[i].y){
+					coo.triple[i+1].x = coo.triple[i].y;
+					coo.triple[i+1].y = coo.triple[i].x;
+					coo.triple[i+1].val = 1;
 					i++;
 				}
 				i++;
@@ -220,11 +220,11 @@ int read_matrix(csr_t *csr, char *filename){
 			float im;
 			while(!feof(fp)){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f %f", &coo->triple[i].x, &coo->triple[i].y, &coo->triple[i].val, &im);
-				if(coo->triple[i].x != coo->triple[i].y){
-					coo->triple[i+1].x = coo->triple[i].y;
-					coo->triple[i+1].y = coo->triple[i].x;
-					coo->triple[i+1].val = coo->triple[i].val;
+				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
+				if(coo.triple[i].x != coo.triple[i].y){
+					coo.triple[i+1].x = coo.triple[i].y;
+					coo.triple[i+1].y = coo.triple[i].x;
+					coo.triple[i+1].val = coo.triple[i].val;
 					i++;
 				}
 				i++;
@@ -232,11 +232,11 @@ int read_matrix(csr_t *csr, char *filename){
 		}else{
 			while(!feof(fp)){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f", &coo->triple[i].x, &coo->triple[i].y, &coo->triple[i].val);
-				if(coo->triple[i].x != coo->triple[i].y){
-					coo->triple[i+1].x = coo->triple[i].y;
-					coo->triple[i+1].y = coo->triple[i].x;
-					coo->triple[i+1].val = coo->triple[i].val;
+				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
+				if(coo.triple[i].x != coo.triple[i].y){
+					coo.triple[i+1].x = coo.triple[i].y;
+					coo.triple[i+1].y = coo.triple[i].x;
+					coo.triple[i+1].val = coo.triple[i].val;
 					i++;
 				}
 				i++;
@@ -246,63 +246,63 @@ int read_matrix(csr_t *csr, char *filename){
 		if(field_pattern){
 			while(!feof(fp)){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d", &coo->triple[i].x, &coo->triple[i].y);
-				coo->triple[i].val = 1;
+				sscanf(buffer, "%d %d", &coo.triple[i].x, &coo.triple[i].y);
+				coo.triple[i].val = 1;
 				i++;
 			}
 		}else if(field_complex){
 			float im;
 			while(!feof(fp)){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f %f", &coo->triple[i].x, &coo->triple[i].y, &coo->triple[i].val, &im);
+				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
 				i++;
 			}
 		}else{
 			while(!feof(fp)){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f", &coo->triple[i].x, &coo->triple[i].y, &coo->triple[i].val);
+				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
 				i++;
 			}
 		}
 	}
-	if(i > coo->nnz){
-		printf("ERROR: *** too many entries occered ***\n")
+	if(i > coo.nnz){
+		printf("ERROR: *** too many entries occered ***\n");
 		return ERROR;
 	}
 	printf("\nMatrix is now in coordinate format\n");
 
 	printf("\nMatrix Information:\n");
-	printf("Number of rows      : %d\n", coo->nrow);
-	printf("Number of columns   : %d\n", coo->ncol);
-	printf("Number of non-zeros : %d\n\n", coo->nnz);
+	printf("Number of rows      : %d\n", coo.nrow);
+	printf("Number of columns   : %d\n", coo.ncol);
+	printf("Number of non-zeros : %d\n\n", coo.nnz);
 
 	//COO -> CSR
 	printf("Coverting to CSR format...\n");
 
-	csr->ncol = coo->ncol;
-	csr->nrow = coo->nrow;
-	csr->nnz = coo->nnz;
+	csr->ncol = coo.ncol;
+	csr->nrow = coo.nrow;
+	csr->nnz = coo.nnz;
 	csr->val = (float *)malloc(csr->nnz * sizeof(float));
 	csr->col_idx = (int *)malloc(csr->nnz * sizeof(int));
 	csr->row_ptr = (int *)malloc((csr->nrow + 1) * sizeof(int));
 
-	qsort(coo->triple, coo->nnz, sizeof(triple_t), func_cmp);
+	qsort(coo.triple, coo.nnz, sizeof(triple_t), func_cmp);
 
 	csr->row_ptr[0] = 0;
 	int r = 0;
 	for(i = 0; i < csr->nnz; i++){
-		while(coo->triple[i].x != r){
+		while(coo.triple[i].x != r){
 			csr->row_ptr[++r] = i;
 		}
-		csr->val[i] = coo->triple[i].val;
-		csr->col_idx[i] = coo->triple[i].y;
+		csr->val[i] = coo.triple[i].val;
+		csr->col_idx[i] = coo.triple[i].y;
 	}
 	while(r < csr->nrow){
 		csr->row_ptr[++r] = i;
 	}
-	printf("OK!\n")
+	printf("OK!\n");
 
-	free(coo->triple);
+	free(coo.triple);
 
 	return OK;
 }
@@ -356,7 +356,8 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 
 		//initialize 
 		int thread_rs = thread_start_row;
-		for(int i = 0; i < n_lanes; i++){
+		int i, j, k; //iteration variables
+		for(i = 0; i < n_lanes; i++){
 			while(thread_rs <= thread_end_row && csr->row_ptr[thread_rs+1] == csr->row_ptr[thread_rs]){
 				thread_rs++;
 			}
@@ -382,7 +383,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 		//thread_start_row and thread_end_row contain at least one non-zero
 		//IF1: if the number of rows is less than n_lanes
 		if(thread_rs > thread_end_row){
-			for(int i = 0; i < n_lanes; i++){
+			for(i = 0; i < n_lanes; i++){
 				cvr->tail_ptr[thread_num][i] = thread_rowID[i];
 			}
 		}
@@ -392,11 +393,11 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 		//WARNING: condition of this for loop is uncertain
 		//well, it is certain now. but i'm not that sure
 		// FOR1
-		for(int i = 0; i <= (thread_nnz + n_lanes - 1) / n_lanes; i++){
+		for(i = 0; i <= (thread_nnz + n_lanes - 1) / n_lanes; i++){
 			// IF2: if some lanes are empty
 			if(0 == func_AND(thread_count, n_lanes)){
 				// FOR2: iterate over all lanes, feed or steal
-				for(int j = 0; j < n_lanes; j++){
+				for(j = 0; j < n_lanes; j++){
 					// IF3
 					if(0 == thread_count[j]){
 						thread_rs++;
@@ -418,12 +419,12 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 							//the lane deals thread_end_row must reaches here
 							if(thread_rs == thread_end_row){
 								thread_count[j] = thread_end + 1 - thread_valID[j];
-								for(int k = 0; k < n_lanes; k++){
+								for(k = 0; k < n_lanes; k++){
 									cvr->tail_ptr[thread_num][k] = thread_rowID[k];
 								}
 							}
 						}else{//tracker stealing, thread_rs is not important since then
-							if(-1 == cvr->lrrec_ptr){
+							if(-1 == cvr->lrrec_ptr[thread_num]){
 								cvr->lrrec_ptr[thread_num] = i * n_lanes + j;
 							}
 
@@ -454,16 +455,16 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 
 			//continue converting
 			int gather_base = 0;
-			for(int i = 0; i < n_lanes; i++){
-				if(-1 == thread_valID[i]){
-					cvr->val_ptr[thread_num][i+gather_base] = 0;
-					cvr->colidx_ptr[thread_num][i+gather_base] = cvr->colidx_ptr[thread_num][i+gather_base]-1;
+			for(j = 0; j < n_lanes; j++){
+				if(-1 == thread_valID[j]){
+					cvr->val_ptr[thread_num][j+gather_base] = 0;
+					cvr->colidx_ptr[thread_num][j+gather_base] = cvr->colidx_ptr[thread_num][j+gather_base-1];
 				}else{
-					cvr->val_ptr[thread_num][i+gather_base] = csr->val[thread_valID[i]];
-					cvr->colidx_ptr[thread_num][i+gather_base] = csr->col_idx[thread_valID[i]];
+					cvr->val_ptr[thread_num][j+gather_base] = csr->val[thread_valID[j]];
+					cvr->colidx_ptr[thread_num][j+gather_base] = csr->col_idx[thread_valID[j]];
 				}
-				thread_valID[i]++;
-				thread_count[i]--;
+				thread_valID[j]++;
+				thread_count[j]--;
 			}
 			gather_base += n_lanes;
 		} //ENDFOR1
