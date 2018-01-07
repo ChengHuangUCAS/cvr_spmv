@@ -10,6 +10,10 @@
 #define FIELD_LENGTH 128
 #define COO_BASE 0
 
+#define DEBUG
+#ifdef DEBUG
+#include"matrix_debug.h"
+#else
 typedef struct triple{
 	int x;
 	int y;
@@ -42,6 +46,7 @@ typedef struct cvr{
 	int nrow;
 	int nnz;
 }cvr_t; // compressed vactorization-oriented sparse row format
+#endif
 
 // auxiliary function used in qsort
 int func_cmp(const void *a, const void *b){
@@ -294,6 +299,8 @@ int read_matrix(csr_t *csr, char *filename){
 			}
 		}
 	}
+	fclose(fp);
+
 	if(i > coo.nnz){
 		printf("ERROR: *** too many entries occered ***\n");
 		return ERROR;
