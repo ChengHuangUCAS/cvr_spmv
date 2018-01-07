@@ -136,7 +136,7 @@ int main(int argc, char **argv){
 	for(i = 0; i < cvr->ncol; i++){
 		x[i] = i % 1000;
 	}
-	memset(y, 0, cvr.ncol * sizeof(int));
+	memset(y, 0, cvr.ncol * sizeof(float));
 
 	if(spmv(y, x, &cvr)){
 		printf("ERROR occured in function spmv()\n");
@@ -335,6 +335,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 		int thread_start, thread_end, thread_nnz;
 		int thread_start_row, thread_end_row, thread_nrow;
 
+		//thread information
 		//thread whose thread_num is less than change_thread_nnz handle one more non-zero number than the others
 		//both No.thread_start non-zero and No.thread_end non-zero are handled by this thread
 		if(thread_num < change_thread_nnz){
@@ -424,6 +425,9 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 							if(thread_rs == thread_end_row){
 								thread_count[j] = thread_end + 1 - thread_valID[j];
 								for(k = 0; k < n_lanes; k++){
+									//WARNING: ASK MR XIE ABOUT THIS
+									thread_rowID[k] = k;
+									//YES, EXACTLY THE STATEMENT ABOVE
 									cvr->tail_ptr[thread_num][k] = thread_rowID[k];
 								}
 							}
@@ -460,6 +464,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 			//continue converting
 			int gather_base = 0;
 			for(j = 0; j < n_lanes; j++){
+				//if thread_nnz is not a multiple of n_lanes, this happens at the last round
 				if(-1 == thread_valID[j]){
 					cvr->val_ptr[thread_num][j+gather_base] = 0;
 					cvr->colidx_ptr[thread_num][j+gather_base] = cvr->colidx_ptr[thread_num][j+gather_base-1];
@@ -482,12 +487,18 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 
 
 int spmv(float *y, float *x, cvr_t *cvr){
+
+	int nnz_per_thread = cvr->nnz / n_threads;
+	int change_thread_nnz = cvr->nnz % n_threads;
+
 	int iteration;
+	//FOR1
 	for(iteration = 0; iteration < n_iterations; iteration++){
 		#pragma omp parallel num_threads(n_threads)
 		{
 			int thread_num = omp_get_thread_num();
 
+			//thread information
 			//exactly the same code as in preprocess()
 			int thread_start, thread_end, thread_nnz;
 			int thread_start_row, thread_end_row, thread_nrow;
@@ -504,10 +515,49 @@ int spmv(float *y, float *x, cvr_t *cvr){
 			thread_nrow = thread_end_row - thread_start_row + 1;
 
 			//store the temporary result of this thread
-			int *thread_y = (int *)malloc(cvr->ncol * sizeof(int));
-			memset(thread_y, 0, cvr->ncol * sizeof(int));
-		}
-	}
+			float *thread_y = (float *)malloc(cvr->ncol * sizeof(float));
+			memset(thread_y, 0, cvr->ncol * sizeof(float));
+
+			//store the intermediate result
+			float *thread_temp = (float *)malloc(n_lanes * sizeof(float));
+			memset(thread_temp, 0, n_lanes * sizeof(float));
+
+			int rec_idx = 0;
+			int offset, writeback;
+			int i, j;
+			//FOR2
+			for(i = 0; i < thread_nnz; i += n_lanes){
+				for(j = 0; j < n_lanes; j++){
+					int x_offset = cvr->colidx_ptr[thread_num][i*n_lanes+j];
+					thread_temp[j] += cvr->val_ptr[thread_num][i*n_lanes+j] * x[x_offset];
+				}
+				//corresponding to tracker feeding part
+				if(cvr->rec_ptr[thread_num][rec_idx] < cvr->lrrec_ptr[thread_num]){
+					//more than one temporary result could be processed here
+					while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i / n_lanes){
+						offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
+						writeback = cvr->rec_ptr[thread_num][rec_idx++];
+						thread_y[writeback] = thread_temp[offset];
+						thread_temp[offset] = 0;
+					}
+				}else{//corresponding to tracker stealing part
+					while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i / n_lanes){
+						offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
+						writeback = cvr->rec_ptr[thread_num][rec_idx++];
+						thread_temp[writeback] += thread_temp[offset];
+					}
+				}
+			} //ENDFOR2
+			for(i = 0; i < n_lanes; i++){
+				thread_y[cvr->tail_ptr[thread_num][i]] = thread_temp[i];
+			}
+
+			for(i = 0; i < cvr->ncol; i++){
+				#pragma omp atomic
+				y[i] += thread_y[i];
+			}
+		} //ENDPRAGMA
+	} //ENDFOR1: iteration
 
 	return OK;
 }
