@@ -8,6 +8,7 @@
 #define OVERFLOW 2
 
 #define FIELD_LENGTH 128
+#define COO_BASE 0
 
 typedef struct triple{
 	int x;
@@ -97,8 +98,8 @@ int func_average(int *count, int n){
 int read_matrix(csr_t *csr, char *filename);
 // CSR format -> CVR format
 int preprocess(cvr_t *cvr, csr_t *csr);
-// CVR format SpMV, y = y + M * x
-int spmv(float *y, float *x, cvr_t *cvr);
+// CVR format SpMV, y = y + M * x, parameter csr is only used in func_get_row
+int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr);
 
 int n_threads = 4;
 int n_lanes = 16;
@@ -133,14 +134,38 @@ int main(int argc, char **argv){
 
 	x = (float *)malloc(cvr.ncol * sizeof(float));
 	y = (float *)malloc(cvr.ncol * sizeof(float));
-	for(i = 0; i < cvr->ncol; i++){
+	int i, j, iteration;
+	for(i = 0; i < cvr.ncol; i++){
 		x[i] = i % 1000;
 	}
 	memset(y, 0, cvr.ncol * sizeof(float));
 
-	if(spmv(y, x, &cvr)){
+	if(spmv(y, x, &cvr, &csr)){
 		printf("ERROR occured in function spmv()\n");
 		return ERROR;
+	}
+
+	float *y_verify = (float *)malloc(csr.ncol * sizeof(float));
+	float sum;
+	memset(y_verify, 0, csr.ncol * sizeof(float));
+	for(iteration = 0; iteration < n_iterations; iteration++){
+		for(i = 0; i < csr.nrow; i++){
+			sum = 0;
+			for(j = csr.row_ptr[i]; j < csr.row_ptr[i+1]; j++){
+				sum += csr.val[j] * x[csr.col_idx[j]];
+			}
+			y_verify[i] += sum;
+		}
+	}
+
+	int count = 0;
+	for(i = 0; i < csr.ncol; i++){
+		if(y[i] != y_verify[i]){
+			if(count > 10){
+				break;
+			}
+			printf("%dth number of vector y should be %f, but the result is %f\n", i, y_verify[i], y[i]);
+		}
 	}
 
 	return 0;
@@ -295,11 +320,11 @@ int read_matrix(csr_t *csr, char *filename){
 	csr->row_ptr[0] = 0;
 	int r = 0;
 	for(i = 0; i < csr->nnz; i++){
-		while(coo.triple[i].x != r){
+		while(coo.triple[i].x - COO_BASE != r){
 			csr->row_ptr[++r] = i;
 		}
 		csr->val[i] = coo.triple[i].val;
-		csr->col_idx[i] = coo.triple[i].y;
+		csr->col_idx[i] = coo.triple[i].y - COO_BASE;
 	}
 	while(r < csr->nrow){
 		csr->row_ptr[++r] = i;
@@ -486,7 +511,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 
 
 
-int spmv(float *y, float *x, cvr_t *cvr){
+int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 
 	int nnz_per_thread = cvr->nnz / n_threads;
 	int change_thread_nnz = cvr->nnz % n_threads;
