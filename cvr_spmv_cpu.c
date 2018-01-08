@@ -106,8 +106,8 @@ int preprocess(cvr_t *cvr, csr_t *csr);
 // CVR format SpMV, y = y + M * x, parameter csr is only used in func_get_row
 int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr);
 
-int n_threads = 4;
-int n_lanes = 16;
+int n_threads = 1;
+int n_lanes = 2;
 int n_iterations = 10;
 
 int main(int argc, char **argv){
@@ -169,7 +169,8 @@ int main(int argc, char **argv){
 			if(count > 10){
 				break;
 			}
-			printf("%dth number of vector y should be %f, but the result is %f\n", i, y_verify[i], y[i]);
+			printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], y[i]);
+			count++;
 		}
 	}
 
@@ -233,7 +234,9 @@ int read_matrix(csr_t *csr, char *filename){
 		coo.nnz *= 2;
 	}
 	coo.triple = (triple_t *)malloc(coo.nnz * sizeof(triple_t)); //this pointer is useless out of this function. remember to free it.
-printf("row=%d, col=%d, nnz=%d\n", coo.nrow, coo.ncol, coo.nnz);
+
+//printf("row=%d, col=%d, nnz=%d\n", coo.nrow, coo.ncol, coo.nnz);
+
 	//MMF -> coordinate format
 	int i = 0;
 	if(symmetry_symmetric){
@@ -306,7 +309,7 @@ printf("row=%d, col=%d, nnz=%d\n", coo.nrow, coo.ncol, coo.nnz);
 	printf("Number of columns   : %d\n", coo.ncol);
 	printf("Number of non-zeros : %d\n\n", coo.nnz);
 
-print_coo(&coo);
+//print_coo(&coo);
 
 	//COO -> CSR
 	printf("Coverting to CSR format...\n");
@@ -355,12 +358,16 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 	cvr->rec_ptr = (int **)malloc(n_threads * sizeof(int *));
 	cvr->tail_ptr = (int **)malloc(n_threads * sizeof(int *));
 
+//print_cvr_info(cvr);
+
 	int nnz_per_thread = cvr->nnz / n_threads;
 	int change_thread_nnz = cvr->nnz % n_threads;
 
 	#pragma omp parallel num_threads(n_threads)
 	{
 		int thread_num = omp_get_thread_num();
+
+print_thread(thread_num);
 
 		int thread_start, thread_end, thread_nnz;
 		int thread_start_row, thread_end_row, thread_nrow;
@@ -388,6 +395,9 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 		int *thread_valID = (int *)malloc(n_lanes * sizeof(int));
 		int *thread_rowID = (int *)malloc(n_lanes * sizeof(int));
 		int *thread_count = (int *)malloc(n_lanes * sizeof(int));
+
+#pragma omp critical
+print_cvr_thread_info(cvr, thread_num);
 
 		//initialize 
 		int thread_rs = thread_start_row;
@@ -423,7 +433,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 			}
 		}
 
-		int rec_idx = 0;
+		int rec_idx = 0, gather_base = 0;;
 		cvr->lrrec_ptr[thread_num] = -1;
 		//WARNING: condition of this for loop is uncertain
 		//well, it is certain now. but i'm not that sure
@@ -435,7 +445,6 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 				for(j = 0; j < n_lanes; j++){
 					// IF3
 					if(0 == thread_count[j]){
-						thread_rs++;
 						//EQUAL is included because thread_end_row can be reached
 						while(thread_rs <= thread_end_row && csr->row_ptr[thread_rs+1] == csr->row_ptr[thread_rs]){
 							thread_rs++;
@@ -487,12 +496,12 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 								thread_count[candidate] = thread_count[candidate] - thread_count[j];
 							}
 						}
+						thread_rs++;
 					} //ENDIF3
 				} //ENDFOR2
 			} //ENDIF2
 
 			//continue converting
-			int gather_base = 0;
 			for(j = 0; j < n_lanes; j++){
 				//if thread_nnz is not a multiple of n_lanes, this happens at the last round
 				if(-1 == thread_valID[j]){
@@ -502,6 +511,8 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 					cvr->val_ptr[thread_num][j+gather_base] = csr->val[thread_valID[j]];
 					cvr->colidx_ptr[thread_num][j+gather_base] = csr->col_idx[thread_valID[j]];
 				}
+printf("val[%d]=%.2f, col[%d]=%d\n", j+gather_base, cvr->val_ptr[thread_num][j+gather_base], \
+	j+gather_base, cvr->colidx_ptr[thread_num][j+gather_base]);
 				thread_valID[j]++;
 				thread_count[j]--;
 			}
@@ -510,6 +521,8 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 	} //ENDPRAGMA
 
 	printf("OK!\n");
+
+print_cvr(cvr);
 
 	return OK;
 }
