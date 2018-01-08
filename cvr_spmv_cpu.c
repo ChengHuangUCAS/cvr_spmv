@@ -233,12 +233,12 @@ int read_matrix(csr_t *csr, char *filename){
 		coo.nnz *= 2;
 	}
 	coo.triple = (triple_t *)malloc(coo.nnz * sizeof(triple_t)); //this pointer is useless out of this function. remember to free it.
-
+printf("row=%d, col=%d, nnz=%d\n", coo.nrow, coo.ncol, coo.nnz);
 	//MMF -> coordinate format
 	int i = 0;
 	if(symmetry_symmetric){
 		if(field_pattern){
-			while(!feof(fp)){
+			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
 				sscanf(buffer, "%d %d", &coo.triple[i].x, &coo.triple[i].y);
 				coo.triple[i].val = 1;
@@ -248,11 +248,10 @@ int read_matrix(csr_t *csr, char *filename){
 					coo.triple[i+1].val = 1;
 					i++;
 				}
-				i++;
 			}
 		}else if(field_complex){
 			float im;
-			while(!feof(fp)){
+			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
 				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
 				if(coo.triple[i].x != coo.triple[i].y){
@@ -261,10 +260,9 @@ int read_matrix(csr_t *csr, char *filename){
 					coo.triple[i+1].val = coo.triple[i].val;
 					i++;
 				}
-				i++;
 			}
 		}else{
-			while(!feof(fp)){
+			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
 				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
 				if(coo.triple[i].x != coo.triple[i].y){
@@ -273,29 +271,25 @@ int read_matrix(csr_t *csr, char *filename){
 					coo.triple[i+1].val = coo.triple[i].val;
 					i++;
 				}
-				i++;
 			}
 		}
 	}else{ // if it is not a symmetric matrix
 		if(field_pattern){
-			while(!feof(fp)){
+			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
 				sscanf(buffer, "%d %d", &coo.triple[i].x, &coo.triple[i].y);
 				coo.triple[i].val = 1;
-				i++;
 			}
 		}else if(field_complex){
 			float im;
-			while(!feof(fp)){
+			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
 				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
-				i++;
 			}
 		}else{
-			while(!feof(fp)){
+			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
 				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
-				i++;
 			}
 		}
 	}
@@ -311,6 +305,8 @@ int read_matrix(csr_t *csr, char *filename){
 	printf("Number of rows      : %d\n", coo.nrow);
 	printf("Number of columns   : %d\n", coo.ncol);
 	printf("Number of non-zeros : %d\n\n", coo.nnz);
+
+print_coo(&coo);
 
 	//COO -> CSR
 	printf("Coverting to CSR format...\n");
@@ -339,6 +335,8 @@ int read_matrix(csr_t *csr, char *filename){
 	printf("OK!\n");
 
 	free(coo.triple);
+
+print_csr(csr);
 
 	return OK;
 }
