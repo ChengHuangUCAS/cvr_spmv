@@ -41,6 +41,9 @@ extern void print_csr_n(csr_t *csr, int n);
 extern void print_cvr(cvr_t *cvr);
 extern void print_cvr_n(cvr_t *cvr, int n);
 
+extern void print_thread(int thread_num);
+extern void print_cvr_info(cvr_t *cvr);
+
 
 void print_coo_n(coo_t *coo, int n){
 	int i;
@@ -80,14 +83,14 @@ void print_csr(csr_t *csr){
 
 void print_cvr_n(cvr_t *cvr, int n){
 	int i, j;
-	int n_threads = 4;
+	int n_threads = 1;
 	printf("\ncvr format\n");
 	for(i = 0; i < n_threads; i++){
-		for(j = 0; j < n / 4; j++){
-			printf("%2f ", cvr->val_ptr[i][j]);
+		for(j = 0; j < n / n_threads; j++){
+			printf("%.2f ", cvr->val_ptr[i][j]);
 		}
 		printf("    ");
-		for(j = 0; j < n / 4; j++){
+		for(j = 0; j < n / n_threads; j++){
 			printf("%4d ", cvr->colidx_ptr[i][j]);
 		}
 		printf("\n");
@@ -97,5 +100,29 @@ void print_cvr_n(cvr_t *cvr, int n){
 
 void print_cvr(cvr_t *cvr){
 	print_cvr_n(cvr, cvr->nnz);
+}
+
+
+
+void print_thread(int thread_num){
+	printf("this thread = %d\n", thread_num);
+}
+
+void print_cvr_info(cvr_t *cvr){
+	printf("\ncvr info:\n");
+	printf("   val_ptr = %x\n", cvr->val_ptr);
+	printf("colidx_ptr = %x\n", cvr->colidx_ptr);
+	printf("   rec_ptr = %x\n", cvr->rec_ptr);
+	printf(" lrrec_ptr = %x\n", cvr->lrrec_ptr);
+	printf("  tail_ptr = %x\n", cvr->tail_ptr);
+	printf("nrow = %d, ncol = %d, nnz = %d\n\n", cvr->nrow, cvr->ncol, cvr->nnz);
+}
+
+void print_cvr_thread_info(cvr_t *cvr, int thread_num){
+	printf("\ncvr thread info:\n");
+    printf("cvr->val_ptr[%d] = %x, ", thread_num, cvr->val_ptr[thread_num]);
+    printf("cvr->colidx_ptr[%d] = %x, ", thread_num, cvr->colidx_ptr[thread_num]);
+    printf("cvr->rec_ptr[%d] = %x, ", thread_num, cvr->rec_ptr[thread_num]);
+    printf("cvr->tail_ptr[%d] = %x\n", thread_num, cvr->tail_ptr[thread_num]);
 }
 
