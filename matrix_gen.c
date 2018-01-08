@@ -26,7 +26,7 @@ int func_fliter(triple_t *t, int *n){
 	for(i = 0; i + gap < count; ){
 		if(t[i].x == t[i+gap+1].x && t[i].y == t[i+gap+1].y){
 			gap++;
-			*n--;
+			(*n)--;
 		}else{
 			t[i+1].x = t[i+gap+1].x;
 			t[i+1].y = t[i+gap+1].y;
@@ -51,8 +51,7 @@ int main(int argc, char **argv){
 	char *filename = argv[1];
 	FILE *fp = fopen(filename, "w");
 	fprintf(fp, "%%%%MatrixMarket matrix coordinate real general\n");
-	fprintf(fp, "%============\n%%unimportant comment\n%============\n");
-	fprintf(fp, "  %d  %d  %d\n", row, col, nnz);
+	fprintf(fp, "%%============\n%%unimportant comment\n%%============\n");
 
 	triple_t *triple = (triple_t *)malloc(nnz * sizeof(triple_t));
 	int i;
@@ -66,6 +65,7 @@ int main(int argc, char **argv){
 	qsort(triple, nnz, sizeof(triple_t), func_cmp);
 	func_fliter(triple, &nnz);
 
+	fprintf(fp, "  %d  %d  %d\n", row, col, nnz);
 	for(i = 0; i < nnz; i++){
 		fprintf(fp, " %d %d %f  \n", triple[i].x, triple[i].y, triple[i].val);
 	}
