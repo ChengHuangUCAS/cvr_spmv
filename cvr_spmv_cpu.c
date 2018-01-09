@@ -108,7 +108,7 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr);
 
 int n_threads = 1;
 int n_lanes = 2;
-int n_iterations = 10;
+int n_iterations = 1;
 
 int main(int argc, char **argv){
 	csr_t csr;
@@ -163,15 +163,19 @@ int main(int argc, char **argv){
 		}
 	}
 
+//print_vector(y_verify, csr.nrow);
+
 	int count = 0;
 	for(i = 0; i < csr.ncol; i++){
 		if(y[i] != y_verify[i]){
-			if(count > 10){
-				break;
-			}
-			printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], y[i]);
-			count++;
+			printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], y[i]);	
+		}else{
+			printf("y[%d] is correct\n", i);
 		}
+		if(count > 10){
+			break;
+		}
+		count++;
 	}
 
 	return 0;
@@ -339,7 +343,7 @@ int read_matrix(csr_t *csr, char *filename){
 
 	free(coo.triple);
 
-print_csr(csr);
+//print_csr(csr);
 
 	return OK;
 }
@@ -358,7 +362,6 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 	cvr->rec_ptr = (int **)malloc(n_threads * sizeof(int *));
 	cvr->tail_ptr = (int **)malloc(n_threads * sizeof(int *));
 
-//print_cvr_info(cvr);
 
 	int nnz_per_thread = cvr->nnz / n_threads;
 	int change_thread_nnz = cvr->nnz % n_threads;
@@ -367,7 +370,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 	{
 		int thread_num = omp_get_thread_num();
 
-print_thread(thread_num);
+//print_thread(thread_num);
 
 		int thread_start, thread_end, thread_nnz;
 		int thread_start_row, thread_end_row, thread_nrow;
@@ -396,9 +399,6 @@ print_thread(thread_num);
 		int *thread_rowID = (int *)malloc(n_lanes * sizeof(int));
 		int *thread_count = (int *)malloc(n_lanes * sizeof(int));
 
-#pragma omp critical
-print_cvr_thread_info(cvr, thread_num);
-
 		//initialize 
 		int thread_rs = thread_start_row;
 		int i, j, k; //iteration variables
@@ -414,6 +414,8 @@ print_cvr_thread_info(cvr, thread_num);
 				thread_count[i] = csr->row_ptr[thread_rs+1] - thread_start;
 			}
 			if(thread_rs == thread_end_row){
+//				//lrrec1
+//				cvr->lrrec_ptr[thread_num] = i;
 				thread_count[i] = thread_end + 1 - thread_valID[i];
 			}
 			if(thread_rs > thread_end_row){
@@ -433,7 +435,7 @@ print_cvr_thread_info(cvr, thread_num);
 			}
 		}
 
-		int rec_idx = 0, gather_base = 0;;
+		int rec_idx = 0, gather_base = 0;
 		cvr->lrrec_ptr[thread_num] = -1;
 		//WARNING: condition of this for loop is uncertain
 		//well, it is certain now. but i'm not that sure
@@ -451,7 +453,7 @@ print_cvr_thread_info(cvr, thread_num);
 						}
 
 						//recording
-						cvr->rec_ptr[thread_num][rec_idx++] = i * n_lanes + j; //valID which triggers write back
+						cvr->rec_ptr[thread_num][rec_idx++] = (i - 1) * n_lanes + j; //valID which triggers write back
 						cvr->rec_ptr[thread_num][rec_idx++] = thread_rowID[j]; //write back position
 
 						//tracker feeding
@@ -462,17 +464,19 @@ print_cvr_thread_info(cvr, thread_num);
 							//ELSE1: if the number of rows is more than n_lanes, 
 							//the lane deals thread_end_row must reaches here
 							if(thread_rs == thread_end_row){
+//								//lrrec2
+//								cvr->lrrec_ptr[thread_num] = i * n_lanes + j;
 								thread_count[j] = thread_end + 1 - thread_valID[j];
 								for(k = 0; k < n_lanes; k++){
+									cvr->tail_ptr[thread_num][k] = thread_rowID[k];
 									//WARNING: ASK MR XIE ABOUT THIS
 									thread_rowID[k] = k;
 									//YES, EXACTLY THE STATEMENT ABOVE
-									cvr->tail_ptr[thread_num][k] = thread_rowID[k];
 								}
 							}
 						}else{//tracker stealing, thread_rs is not important since then
 							if(-1 == cvr->lrrec_ptr[thread_num]){
-								cvr->lrrec_ptr[thread_num] = i * n_lanes + j;
+								cvr->lrrec_ptr[thread_num] = (i - 1) * n_lanes + j;
 							}
 
 							int average = func_average(thread_count, n_lanes);
@@ -511,18 +515,16 @@ print_cvr_thread_info(cvr, thread_num);
 					cvr->val_ptr[thread_num][j+gather_base] = csr->val[thread_valID[j]];
 					cvr->colidx_ptr[thread_num][j+gather_base] = csr->col_idx[thread_valID[j]];
 				}
-printf("val[%d]=%.2f, col[%d]=%d\n", j+gather_base, cvr->val_ptr[thread_num][j+gather_base], \
-	j+gather_base, cvr->colidx_ptr[thread_num][j+gather_base]);
+//printf("val[%d]=%.2f, col[%d]=%d\n", j+gather_base, cvr->val_ptr[thread_num][j+gather_base], j+gather_base, cvr->colidx_ptr[thread_num][j+gather_base]);
 				thread_valID[j]++;
 				thread_count[j]--;
 			}
 			gather_base += n_lanes;
 		} //ENDFOR1
+//print_cvr_detail(cvr, thread_num, thread_nnz, thread_nrow, n_lanes);
 	} //ENDPRAGMA
 
 	printf("OK!\n");
-
-print_cvr(cvr);
 
 	return OK;
 }
@@ -544,7 +546,7 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 			//thread information
 			//exactly the same code as in preprocess()
 			int thread_start, thread_end, thread_nnz;
-			int thread_start_row, thread_end_row, thread_nrow;
+//			int thread_start_row, thread_end_row, thread_nrow;
 			if(thread_num < change_thread_nnz){
 				thread_start = thread_num * nnz_per_thread + thread_num * 1;
 				thread_end = (thread_num + 1) * nnz_per_thread + (thread_num + 1) * 1 - 1;
@@ -553,9 +555,9 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 				thread_end = (thread_num + 1) * nnz_per_thread + change_thread_nnz * 1 - 1;
 			}
 			thread_nnz = thread_end - thread_start + 1;
-			thread_start_row = func_get_row(thread_start, csr);
-			thread_end_row = func_get_row(thread_end, csr);
-			thread_nrow = thread_end_row - thread_start_row + 1;
+//			thread_start_row = func_get_row(thread_start, csr);
+//			thread_end_row = func_get_row(thread_end, csr);
+//			thread_nrow = thread_end_row - thread_start_row + 1;
 
 			//store the temporary result of this thread
 			float *thread_y = (float *)malloc(cvr->ncol * sizeof(float));
@@ -569,7 +571,7 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 			int offset, writeback;
 			int i, j;
 			//FOR2
-			for(i = 0; i < thread_nnz; i += n_lanes){
+			for(i = 0; i < (thread_nnz + n_lanes - 1) / n_lanes; i++){
 				for(j = 0; j < n_lanes; j++){
 					int x_offset = cvr->colidx_ptr[thread_num][i*n_lanes+j];
 					thread_temp[j] += cvr->val_ptr[thread_num][i*n_lanes+j] * x[x_offset];
@@ -577,23 +579,32 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 				//corresponding to tracker feeding part
 				if(cvr->rec_ptr[thread_num][rec_idx] < cvr->lrrec_ptr[thread_num]){
 					//more than one temporary result could be processed here
-					while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i / n_lanes){
-						offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
-						writeback = cvr->rec_ptr[thread_num][rec_idx++];
-						thread_y[writeback] = thread_temp[offset];
-						thread_temp[offset] = 0;
+					while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i){
+						if(cvr->rec_ptr[thread_num][rec_idx] < cvr->lrrec_ptr[thread_num]){
+							offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
+							writeback = cvr->rec_ptr[thread_num][rec_idx++];
+							thread_y[writeback] = thread_temp[offset];
+							thread_temp[offset] = 0;
+						}else{ // in case rec[rec_idx] < lrrec < rec[rec_idx+2]
+							offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
+							writeback = cvr->rec_ptr[thread_num][rec_idx++];
+							thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
+							thread_temp[offset] = 0;
+						}
 					}
 				}else{//corresponding to tracker stealing part
-					while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i / n_lanes){
+					while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i){
 						offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
 						writeback = cvr->rec_ptr[thread_num][rec_idx++];
-						thread_temp[writeback] += thread_temp[offset];
+//						thread_temp[writeback] += thread_temp[offset];
+						thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
+						thread_temp[offset] = 0;
 					}
 				}
 			} //ENDFOR2
-			for(i = 0; i < n_lanes; i++){
-				thread_y[cvr->tail_ptr[thread_num][i]] = thread_temp[i];
-			}
+//			for(i = 0; i < n_lanes; i++){
+//				thread_y[cvr->tail_ptr[thread_num][i]] = thread_temp[i];
+//			}
 
 			for(i = 0; i < cvr->ncol; i++){
 				#pragma omp atomic
@@ -601,6 +612,10 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 			}
 		} //ENDPRAGMA
 	} //ENDFOR1: iteration
+
+//print_matrix(csr);
+//print_vector(x, csr->ncol);
+//print_vector(y, csr->nrow);
 
 	return OK;
 }
