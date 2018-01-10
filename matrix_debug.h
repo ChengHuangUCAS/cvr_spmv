@@ -194,6 +194,6 @@ void print_cvr_detail(cvr_t *cvr, int thread_num, int thread_nnz, int thread_nro
 	}
 	printf("\n");
 
-	printf("nrow = %d, ncol = %d, nnz = %d\n\n", cvr->nrow, cvr->ncol, cvr->nnz);
+	printf("  nrow = %d, ncol = %d, nnz = %d\n\n", cvr->nrow, cvr->ncol, cvr->nnz);
 }
 
