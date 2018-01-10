@@ -107,7 +107,7 @@ int preprocess(cvr_t *cvr, csr_t *csr);
 int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr);
 
 int n_threads = 1;
-int n_lanes = 2;
+int n_lanes = 16;
 int n_iterations = 1;
 
 int main(int argc, char **argv){
@@ -138,21 +138,21 @@ int main(int argc, char **argv){
 	}
 
 	x = (float *)malloc(cvr.ncol * sizeof(float));
-	y = (float *)malloc(cvr.ncol * sizeof(float));
+	y = (float *)malloc(cvr.nrow * sizeof(float));
 	int i, j, iteration;
-	for(i = 0; i < cvr.ncol; i++){
+	for(i = 0; i < cvr.nrow; i++){
 		x[i] = i % 1000;
 	}
-	memset(y, 0, cvr.ncol * sizeof(float));
+	memset(y, 0, cvr.nrow * sizeof(float));
 
 	if(spmv(y, x, &cvr, &csr)){
 		printf("ERROR occured in function spmv()\n");
 		return ERROR;
 	}
 
-	float *y_verify = (float *)malloc(csr.ncol * sizeof(float));
+	float *y_verify = (float *)malloc(csr.nrow * sizeof(float));
 	float sum;
-	memset(y_verify, 0, csr.ncol * sizeof(float));
+	memset(y_verify, 0, csr.nrow * sizeof(float));
 	for(iteration = 0; iteration < n_iterations; iteration++){
 		for(i = 0; i < csr.nrow; i++){
 			sum = 0;
@@ -166,16 +166,17 @@ int main(int argc, char **argv){
 //print_vector(y_verify, csr.nrow);
 
 	int count = 0;
-	for(i = 0; i < csr.ncol; i++){
+	for(i = 0; i < csr.nrow; i++){
 		if(y[i] != y_verify[i]){
+			count++;
 			printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], y[i]);	
-		}else{
-			printf("y[%d] is correct\n", i);
 		}
 		if(count > 10){
-			break;
+			return 0;
 		}
-		count++;
+	}
+	if(0 == count){
+		printf("Correct\n");
 	}
 
 	return 0;
@@ -392,7 +393,8 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 		
 		cvr->val_ptr[thread_num] = (float *)malloc(thread_nnz * sizeof(float));
 		cvr->colidx_ptr[thread_num] = (int *)malloc(thread_nnz * sizeof(int));
-		cvr->rec_ptr[thread_num] = (int *)malloc(thread_nrow * 2 * sizeof(int));
+		int n_recs = (thread_nrow + n_lanes - 1) / n_lanes * n_lanes;
+		cvr->rec_ptr[thread_num] = (int *)malloc(n_recs * 2 * sizeof(int));
 		cvr->tail_ptr[thread_num] = (int *)malloc(n_lanes * sizeof(int));
 
 		int *thread_valID = (int *)malloc(n_lanes * sizeof(int));
@@ -406,25 +408,25 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 			while(thread_rs <= thread_end_row && csr->row_ptr[thread_rs+1] == csr->row_ptr[thread_rs]){
 				thread_rs++;
 			}
-			thread_rowID[i] = thread_rs;
-			thread_valID[i] = csr->row_ptr[thread_rs];
-			thread_count[i] = csr->row_ptr[thread_rs+1] - csr->row_ptr[thread_rs];
-			if(thread_rs == thread_start_row){
-				thread_valID[i] = thread_start;
-				thread_count[i] = csr->row_ptr[thread_rs+1] - thread_start;
-			}
-			if(thread_rs == thread_end_row){
-//				//lrrec1
-//				cvr->lrrec_ptr[thread_num] = i;
-				thread_count[i] = thread_end + 1 - thread_valID[i];
-			}
 			if(thread_rs > thread_end_row){
 				thread_rowID[i] = -1;
 				thread_valID[i] = -1;
 				thread_count[i] = 0;
+			}else{
+				thread_rowID[i] = thread_rs;
+				thread_valID[i] = csr->row_ptr[thread_rs];
+				thread_count[i] = csr->row_ptr[thread_rs+1] - csr->row_ptr[thread_rs];
+				if(thread_rs == thread_start_row){
+					thread_valID[i] = thread_start;
+					thread_count[i] = csr->row_ptr[thread_rs+1] - thread_start;
+				}
+				if(thread_rs == thread_end_row){
+					thread_count[i] = thread_end + 1 - thread_valID[i];
+				}
+			
+				thread_valID[i] = thread_valID[i] - thread_start;
+				thread_rs++;
 			}
-			thread_valID[i] = thread_valID[i] - thread_start;
-			thread_rs++;
 		}
 		//because the behavior of func_get_row(), 
 		//thread_start_row and thread_end_row contain at least one non-zero
@@ -437,8 +439,6 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 
 		int rec_idx = 0, gather_base = 0;
 		cvr->lrrec_ptr[thread_num] = -1;
-		//WARNING: condition of this for loop is uncertain
-		//well, it is certain now. but i'm not that sure
 		// FOR1
 		for(i = 0; i <= (thread_nnz + n_lanes - 1) / n_lanes; i++){
 			// IF2: if some lanes are empty
@@ -453,8 +453,10 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 						}
 
 						//recording
-						cvr->rec_ptr[thread_num][rec_idx++] = (i - 1) * n_lanes + j; //valID which triggers write back
-						cvr->rec_ptr[thread_num][rec_idx++] = thread_rowID[j]; //write back position
+						if(-1 != thread_rowID[j]){
+							cvr->rec_ptr[thread_num][rec_idx++] = (i - 1) * n_lanes + j; //valID which triggers write back
+							cvr->rec_ptr[thread_num][rec_idx++] = thread_rowID[j]; //write back position
+						}
 
 						//tracker feeding
 						if(thread_rs <= thread_end_row){
@@ -476,7 +478,8 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 							}
 						}else{//tracker stealing, thread_rs is not important since then
 							if(-1 == cvr->lrrec_ptr[thread_num]){
-								cvr->lrrec_ptr[thread_num] = (i - 1) * n_lanes + j;
+								int temp_lrrec = (i - 1) * n_lanes + j;
+								cvr->lrrec_ptr[thread_num] = temp_lrrec < 0 ? 0 : temp_lrrec;
 							}
 
 							int average = func_average(thread_count, n_lanes);
@@ -494,10 +497,10 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 								}
 								thread_rowID[j] = candidate;
 								thread_valID[j] = thread_valID[candidate];
-								thread_count[j] = thread_count[candidate] - average;
+								thread_count[j] = average;
 								thread_rowID[candidate] = candidate;
-								thread_valID[candidate] = thread_valID[candidate] + thread_count[j];
-								thread_count[candidate] = thread_count[candidate] - thread_count[j];
+								thread_valID[candidate] = thread_valID[candidate] + average;
+								thread_count[candidate] = thread_count[candidate] - average;
 							}
 						}
 						thread_rs++;
@@ -506,7 +509,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 			} //ENDIF2
 
 			//continue converting
-			for(j = 0; j < n_lanes; j++){
+			for(j = 0; j < n_lanes && j + gather_base <= thread_nnz; j++){
 				//if thread_nnz is not a multiple of n_lanes, this happens at the last round
 				if(-1 == thread_valID[j]){
 					cvr->val_ptr[thread_num][j+gather_base] = 0;
@@ -521,10 +524,10 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 			}
 			gather_base += n_lanes;
 		} //ENDFOR1
-//print_cvr_detail(cvr, thread_num, thread_nnz, thread_nrow, n_lanes);
+print_cvr_detail(cvr, thread_num, thread_nnz, thread_nrow, n_lanes);
 	} //ENDPRAGMA
 
-	printf("OK!\n");
+	printf("OK!\n\n");
 
 	return OK;
 }
@@ -560,8 +563,8 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 //			thread_nrow = thread_end_row - thread_start_row + 1;
 
 			//store the temporary result of this thread
-			float *thread_y = (float *)malloc(cvr->ncol * sizeof(float));
-			memset(thread_y, 0, cvr->ncol * sizeof(float));
+			float *thread_y = (float *)malloc(cvr->nrow * sizeof(float));
+			memset(thread_y, 0, cvr->nrow * sizeof(float));
 
 			//store the intermediate result
 			float *thread_temp = (float *)malloc(n_lanes * sizeof(float));
@@ -588,7 +591,9 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 						}else{ // in case rec[rec_idx] < lrrec < rec[rec_idx+2]
 							offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
 							writeback = cvr->rec_ptr[thread_num][rec_idx++];
-							thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
+							if(-1 != cvr->tail_ptr[thread_num][writeback]){
+								thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
+							}
 							thread_temp[offset] = 0;
 						}
 					}
@@ -597,7 +602,9 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 						offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
 						writeback = cvr->rec_ptr[thread_num][rec_idx++];
 //						thread_temp[writeback] += thread_temp[offset];
-						thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
+						if(-1 != cvr->tail_ptr[thread_num][writeback]){
+							thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
+						}
 						thread_temp[offset] = 0;
 					}
 				}
