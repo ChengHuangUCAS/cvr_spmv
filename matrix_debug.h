@@ -163,23 +163,25 @@ void print_cvr_detail(cvr_t *cvr, int thread_num, int thread_nnz, int thread_nro
 	printf("\ncvr detail: thread %d\n", thread_num);
 
 	printf("  *val_ptr:    ");
-	for(i = 0; i < thread_nnz; i++){
+	int n_vals = (thread_nnz + n_lanes - 1) / n_lanes * n_lanes;
+	for(i = 0; i < n_vals; i++){
 		printf("%.2f ", cvr->val_ptr[thread_num][i]);
 	}
 	printf("\n");
 
 	printf("  *colidx_ptr: ");
-	for(i = 0; i < thread_nnz; i++){
+	for(i = 0; i < n_vals; i++){
 		printf("%4d ", cvr->colidx_ptr[thread_num][i]);
 	}
 	printf("\n");
 
 	printf("  *rec_ptr: ");
-	for(i = 0; i < thread_nrow; i++){
+	int n_recs = (thread_nrow + n_lanes - 1) / n_lanes * n_lanes;
+	for(i = 0; i < n_recs; i++){
 		printf("%2d ", cvr->rec_ptr[thread_num][2*i]);
 	}
 	printf("\n            ");
-	for(i = 0; i < thread_nrow; i++){
+	for(i = 0; i < n_recs; i++){
 		printf("%2d ", cvr->rec_ptr[thread_num][2*i+1]);
 	}
 	printf("\n");
