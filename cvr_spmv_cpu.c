@@ -578,9 +578,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 									thread_count[j] = thread_end + 1 - thread_valID[j] - thread_start;
 									for(k = 0; k < n_lanes; k++){
 										cvr->tail_ptr[thread_num][k] = thread_rowID[k];
-										//WARNING: ASK MR XIE ABOUT THIS
 										thread_rowID[k] = k;
-										//YES, EXACTLY THE STATEMENT ABOVE
 									}
 								}
 								thread_rs++;
@@ -754,7 +752,7 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 //printf("thread_%d complete\n", thread_num);
 //}
 //ENDDEBUG: THREAD
-			
+
 		} //ENDPRAGMA
 	} //ENDFOR1: iteration
 
