@@ -549,6 +549,9 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 			cvr->lrrec_ptr[thread_num] = -1;
 			// FOR1
 			for(i = 0; i <= thread_n_vals / n_lanes; i++){
+//DEBUG: ITERATOR
+//printf("iteration %d/%d\n", i, (thread_nnz + n_lanes - 1) / n_lanes);
+//ENDDEBUG: ITERATOR
 				// IF2: if some lanes are empty
 				if(0 == func_AND(thread_count, n_lanes)){
 					// FOR2: iterate over all lanes, feed or steal
