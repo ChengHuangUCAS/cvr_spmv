@@ -5,7 +5,6 @@
 
 #define OK 0
 #define ERROR 1
-#define OVERFLOW 2
 
 #define FIELD_LENGTH 128
 #define COO_BASE 0
@@ -129,13 +128,16 @@ int main(int argc, char **argv){
 		return ERROR;
 	}
 	char *filename = argv[1];
+
+// ARGUEMENTS: unimportant for now
+/*
 	if(argc > 2){
 		n_threads = atoi(argv[2]);
 		if(4 == argc){
 			n_iterations = atoi(argv[3]);
 		}
 	}
-
+*/
 	if(read_matrix(&csr, filename)){
 		printf("ERROR occured in function read_matrix()\n");
 		return ERROR;
@@ -147,7 +149,17 @@ int main(int argc, char **argv){
 	}
 
 	x = (float *)malloc(cvr.ncol * sizeof(float));
+	if(NULL == x){
+		printf("ERROR: *** memory overflow in main(), unsufficient memory for x ***\n");
+		return ERROR;
+	}
+
 	y = (float *)malloc(cvr.nrow * sizeof(float));
+	if(NULL == y){
+		printf("ERROR: *** memory overflow in main(), unsufficient memory for y ***\n");
+		return ERROR;
+	}
+
 	int i, j, iteration;
 	for(i = 0; i < cvr.nrow; i++){
 		x[i] = i % 1000;
@@ -160,6 +172,10 @@ int main(int argc, char **argv){
 	}
 
 	float *y_verify = (float *)malloc(csr.nrow * sizeof(float));
+	if(NULL == y_verify){
+		printf("ERROR: *** memory overflow in main(), unsufficient memory for y_verify ***\n");
+		return ERROR;
+	}
 	float sum;
 	memset(y_verify, 0, csr.nrow * sizeof(float));
 	for(iteration = 0; iteration < n_iterations; iteration++){
@@ -171,7 +187,10 @@ int main(int argc, char **argv){
 			y_verify[i] += sum;
 		}
 	}
+
+//DEBUG: Y_VERIFY
 //print_vector(y_verify, csr.nrow);
+//ENDDEBUG: Y_VERIFY
 
 	int count = 0;
 	for(i = 0; i < csr.nrow; i++){
@@ -194,7 +213,7 @@ int main(int argc, char **argv){
 
 int read_matrix(csr_t *csr, char *filename){
 	FILE *fp = fopen(filename, "r");
-	if(NULL == fp){
+	if(!fp){
 		printf("ERROR: *** cannot open file: %s ***\n", filename);
 		return ERROR;
 	}
@@ -247,6 +266,10 @@ int read_matrix(csr_t *csr, char *filename){
 		coo.nnz *= 2;
 	}
 	coo.triple = (triple_t *)malloc(coo.nnz * sizeof(triple_t)); //this pointer is useless out of this function. remember to free it.
+	if(NULL == coo.triple){
+		printf("ERROR: *** memory overflow in read_matrix(), unsufficient memory for coo ***\n");
+		return ERROR;
+	}
 
 	//MMF -> coordinate format
 	int i = 0;
@@ -313,14 +336,16 @@ int read_matrix(csr_t *csr, char *filename){
 		printf("ERROR: *** too many entries occered ***\n");
 		return ERROR;
 	}
-	printf("\nMatrix is now in coordinate format\n");
+	printf("\nMatrix is in coordinate format now\n");
 
 	printf("\nMatrix Information:\n");
 	printf("Number of rows      : %d\n", coo.nrow);
 	printf("Number of columns   : %d\n", coo.ncol);
 	printf("Number of non-zeros : %d\n\n", coo.nnz);
 
+//DEBUG: COORDINATE
 //print_coo(&coo);
+//ENDDEBUG: COORDINATE
 
 	//COO -> CSR
 	printf("Coverting to CSR format...\n");
@@ -329,8 +354,20 @@ int read_matrix(csr_t *csr, char *filename){
 	csr->nrow = coo.nrow;
 	csr->nnz = coo.nnz;
 	csr->val = (float *)malloc(csr->nnz * sizeof(float));
+	if(NULL == csr->val){
+		printf("ERROR: *** memory overflow in read_matrix(), unsufficient memory for csr->val ***\n");
+		return ERROR;
+	}
 	csr->col_idx = (int *)malloc(csr->nnz * sizeof(int));
+	if(NULL == csr->col_idx){
+		printf("ERROR: *** memory overflow in read_matrix(), unsufficient memory for csr->col_idx ***\n");
+		return ERROR;
+	}
 	csr->row_ptr = (int *)malloc((csr->nrow + 1) * sizeof(int));
+	if(NULL == csr->row_ptr){
+		printf("ERROR: *** memory overflow in read_matrix(), unsufficient memory for csr->row_ptr ***\n");
+		return ERROR;
+	}
 
 	qsort(coo.triple, coo.nnz, sizeof(triple_t), func_cmp);
 
@@ -350,7 +387,10 @@ int read_matrix(csr_t *csr, char *filename){
 
 	free(coo.triple);
 
-print_csr(csr);
+//DEBUG: MATRIX
+//print_csr(csr);
+//print_matrix(csr);
+//ENDDEBUG: MATRIX
 
 	return OK;
 }
@@ -364,10 +404,30 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 	cvr->nrow = csr->nrow;
 	cvr->nnz = csr->nnz;
 	cvr->lrrec_ptr = (int *)malloc(n_threads * sizeof(int));
+	if(NULL == cvr->lrrec_ptr){
+		printf("ERROR: *** memory overflow in preprocess(), unsufficient memory for cvr->lrrec_ptr ***\n");
+		return ERROR;
+	}
 	cvr->val_ptr = (float **)malloc(n_threads * sizeof(float *));
+	if(NULL == cvr->val_ptr){
+		printf("ERROR: *** memory overflow in preprocess(), unsufficient memory for cvr->val_ptr ***\n");
+		return ERROR;
+	}
 	cvr->colidx_ptr = (int **)malloc(n_threads * sizeof(int *));
+	if(NULL == cvr->colidx_ptr){
+		printf("ERROR: *** memory overflow in preprocess(), unsufficient memory for cvr->colidx_ptr ***\n");
+		return ERROR;
+	}
 	cvr->rec_ptr = (int **)malloc(n_threads * sizeof(int *));
+	if(NULL == cvr->rec_ptr){
+		printf("ERROR: *** memory overflow in preprocess(), unsufficient memory for cvr->rec_ptr ***\n");
+		return ERROR;
+	}
 	cvr->tail_ptr = (int **)malloc(n_threads * sizeof(int *));
+	if(NULL == cvr->tail_ptr){
+		printf("ERROR: *** memory overflow in preprocess(), unsufficient memory for cvr->tail_ptr ***\n");
+		return ERROR;
+	}
 
 
 	int nnz_per_thread = cvr->nnz / n_threads;
@@ -376,6 +436,11 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 	#pragma omp parallel num_threads(n_threads)
 	{
 		int thread_num = omp_get_thread_num();
+
+//DEBUG: THREAD
+//#pragma omp critical
+//{
+//printf("preprocess thread_%d start\n", thread_num);
 
 		int thread_start, thread_end, thread_nnz;
 		int thread_start_row, thread_end_row, thread_nrow;
@@ -402,13 +467,43 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 			int thread_n_recs = (thread_nrow + n_lanes - 1) / n_lanes * n_lanes;
 		
 			cvr->val_ptr[thread_num] = (float *)malloc(thread_n_vals * sizeof(float));
+			if(NULL == cvr->val_ptr[thread_num]){
+				printf("ERROR: *** memory overflow in preprocess() in thread_%d, unsufficient memory for cvr->val_ptr[%d]\n", thread_num, thread_num);
+				exit(ERROR);
+			}
 			cvr->colidx_ptr[thread_num] = (int *)malloc(thread_n_vals * sizeof(int));
+			if(NULL == cvr->colidx_ptr[thread_num]){
+				printf("ERROR: *** memory overflow in preprocess() in thread_%d, unsufficient memory for cvr->colidx_ptr[%d]\n", thread_num, thread_num);
+				exit(ERROR);
+			}
 			cvr->rec_ptr[thread_num] = (int *)malloc(thread_n_recs * 2 * sizeof(int));
+			if(NULL == cvr->rec_ptr[thread_num]){
+				printf("ERROR: *** memory overflow in preprocess() in thread_%d, unsufficient memory for cvr->rec_ptr[%d]\n", thread_num, thread_num);
+				exit(ERROR);
+			}
 			cvr->tail_ptr[thread_num] = (int *)malloc(n_lanes * sizeof(int));
+			if(NULL == cvr->tail_ptr[thread_num]){
+				printf("ERROR: *** memory overflow in preprocess() in thread_%d, unsufficient memory for cvr->tail_ptr[%d]\n", thread_num, thread_num);
+				exit(ERROR);
+			}
+
 
 			int *thread_valID = (int *)malloc(n_lanes * sizeof(int));
+			if(NULL == thread_valID){
+				printf("ERROR: *** memory overflow in preprocess() in thread_%d, unsufficient memory for thread_valID\n", thread_num);
+				exit(ERROR);
+			}
 			int *thread_rowID = (int *)malloc(n_lanes * sizeof(int));
+			if(NULL ==thread_rowID){
+				printf("ERROR: *** memory overflow in preprocess() in thread_%d, unsufficient memory for thread_rowID\n", thread_num);
+				exit(ERROR);
+			}
 			int *thread_count = (int *)malloc(n_lanes * sizeof(int));
+			if(NULL ==thread_count){
+				printf("ERROR: *** memory overflow in preprocess() in thread_%d, unsufficient memory for thread_count\n", thread_num);
+				exit(ERROR);
+			}
+
 
 			//initialize 
 			int thread_rs = thread_start_row;
@@ -480,7 +575,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 								//ELSE1: if the number of rows is more than n_lanes, initialize tail_ptr
 								//the lane deals thread_end_row must reaches here
 								if(thread_rs == thread_end_row){
-									thread_count[j] = thread_end + 1 - thread_valID[j] + thread_start;
+									thread_count[j] = thread_end + 1 - thread_valID[j] - thread_start;
 									for(k = 0; k < n_lanes; k++){
 										cvr->tail_ptr[thread_num][k] = thread_rowID[k];
 										//WARNING: ASK MR XIE ABOUT THIS
@@ -497,7 +592,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 								}
 
 								int average = func_average(thread_count, n_lanes);
-								//if no remainding numbers exist,
+								//if no remainding numbers exist
 								if(0 == average){
 									if(i != thread_n_vals / n_lanes){
 										printf("ERROR: *** last round of preprocessing is incorrect ***\n");
@@ -545,9 +640,15 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 				}
 				gather_base += n_lanes;
 			} //ENDFOR1
-#pragma omp critical
-print_cvr_detail(cvr, thread_num, thread_nnz, thread_nrow, n_lanes);
+//DEBUG: CVR DETAIL
+//#pragma omp critical
+//print_cvr_detail(cvr, thread_num, thread_nnz, thread_nrow, n_lanes);
+//ENDDEBUG: CVR DETAIL
 		} //ENDIF0
+
+//printf("thread_%d complete\n", thread_num);
+//}
+//ENDDEBUG: THREAD
 	} //ENDPRAGMA
 
 	printf("OK!\n\n");
@@ -569,10 +670,13 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 		{
 			int thread_num = omp_get_thread_num();
 
+//DEBUG: THREAD
+//#pragma omp critical
+//{
+//printf("spmv thread_%d start\n", thread_num);
+
 			//thread information
-			//exactly the same code as in preprocess()
 			int thread_start, thread_end, thread_nnz;
-//			int thread_start_row, thread_end_row, thread_nrow;
 			if(thread_num < change_thread_nnz){
 				thread_start = thread_num * nnz_per_thread + thread_num * 1;
 				thread_end = (thread_num + 1) * nnz_per_thread + (thread_num + 1) * 1 - 1;
@@ -581,23 +685,32 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 				thread_end = (thread_num + 1) * nnz_per_thread + change_thread_nnz * 1 - 1;
 			}
 			thread_nnz = thread_end - thread_start + 1;
-//			thread_start_row = func_get_row(thread_start, csr);
-//			thread_end_row = func_get_row(thread_end, csr);
-//			thread_nrow = thread_end_row - thread_start_row + 1;
 
 			//store the temporary result of this thread
 			float *thread_y = (float *)malloc(cvr->nrow * sizeof(float));
+			if(NULL == thread_y){
+				printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
+				exit(ERROR);
+			}
 			memset(thread_y, 0, cvr->nrow * sizeof(float));
 
 			//store the intermediate result
 			float *thread_temp = (float *)malloc(n_lanes * sizeof(float));
+			if(NULL == thread_temp){
+				printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
+				exit(ERROR);
+			}
 			memset(thread_temp, 0, n_lanes * sizeof(float));
 
 			int rec_idx = 0;
 			int offset, writeback;
 			int i, j;
 			//FOR2
+
 			for(i = 0; i < (thread_nnz + n_lanes - 1) / n_lanes; i++){
+//DEBUG: ITERATOR
+//printf("iteration %d/%d\n", i, (thread_nnz + n_lanes - 1) / n_lanes);
+//ENDDEBUG: ITERATOR
 				for(j = 0; j < n_lanes; j++){
 					int x_offset = cvr->colidx_ptr[thread_num][i*n_lanes+j];
 					thread_temp[j] += cvr->val_ptr[thread_num][i*n_lanes+j] * x[x_offset];
@@ -610,16 +723,12 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 							offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
 							writeback = cvr->rec_ptr[thread_num][rec_idx++];
 							thread_y[writeback] = thread_temp[offset];
-#pragma omp critical
-printf("threadnum = %d, thread_y[%d] = %f\n", thread_num, writeback, thread_y[writeback]);
 							thread_temp[offset] = 0;
 						}else{ // in case rec[rec_idx] < lrrec < rec[rec_idx+2]
 							offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
 							writeback = cvr->rec_ptr[thread_num][rec_idx++];
 							if(-1 != cvr->tail_ptr[thread_num][writeback]){
 								thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
-#pragma omp critical
-printf("threadnum = %d, thread_y[%d] = %f\n", thread_num, cvr->tail_ptr[thread_num][writeback], thread_y[cvr->tail_ptr[thread_num][writeback]]);
 							}
 							thread_temp[offset] = 0;
 						}
@@ -630,24 +739,24 @@ printf("threadnum = %d, thread_y[%d] = %f\n", thread_num, cvr->tail_ptr[thread_n
 						writeback = cvr->rec_ptr[thread_num][rec_idx++];
 						if(-1 != cvr->tail_ptr[thread_num][writeback]){
 							thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
-#pragma omp critical
-printf("threadnum = %d, thread_y[%d] = %f\n", thread_num, cvr->tail_ptr[thread_num][writeback], thread_y[cvr->tail_ptr[thread_num][writeback]]);
 						}
 						thread_temp[offset] = 0;
 					}
 				}
 			} //ENDFOR2
 
-			for(i = 0; i < cvr->ncol; i++){
+			//this can be optimized by exchange PRAGMA and FOR LOOP, vector y is updated after the last iteration 
+			for(i = 0; i < cvr->nrow; i++){
 				#pragma omp atomic
 				y[i] += thread_y[i];
 			}
+
+//printf("thread_%d complete\n", thread_num);
+//}
+//ENDDEBUG: THREAD
+			
 		} //ENDPRAGMA
 	} //ENDFOR1: iteration
-
-//print_matrix(csr);
-//print_vector(x, csr->ncol);
-//print_vector(y, csr->nrow);
 
 	return OK;
 }
