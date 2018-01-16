@@ -16,7 +16,7 @@
 typedef struct triple{
 	int x;
 	int y;
-	float val;
+	double val;
 }triple_t;
 
 typedef struct coo{
@@ -27,7 +27,7 @@ typedef struct coo{
 }coo_t; // coordinate format
 
 typedef struct csr{
-	float *val;
+	double *val;
 	int *col_idx;
 	int *row_ptr;
 	int ncol;
@@ -36,7 +36,7 @@ typedef struct csr{
 }csr_t; // compressed sparse row format
 
 typedef struct cvr{
-	float **val_ptr;
+	double **val_ptr;
 	int **colidx_ptr;
 	int **rec_ptr;
 	int *lrrec_ptr;
@@ -98,7 +98,7 @@ int func_average(int *count, int n){
 }
 
 // auxiliary function to compare result
-int func_compare(float y, float y_verify){
+int func_compare(double y, double y_verify){
 	if(y - y_verify < -0.0001 || y - y_verify > 0.0001){
 		return 1;
 	}else{
@@ -112,7 +112,7 @@ int read_matrix(csr_t *csr, char *filename);
 // CSR format -> CVR format
 int preprocess(cvr_t *cvr, csr_t *csr);
 // CVR format SpMV, y = y + M * x, parameter csr is only used in func_get_row
-int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr);
+int spmv(double *y, double *x, cvr_t *cvr, csr_t *csr);
 
 int n_threads = 2;
 int n_lanes = 4;
@@ -121,7 +121,7 @@ int n_iterations = 1;
 int main(int argc, char **argv){
 	csr_t csr;
 	cvr_t cvr;
-	float *y, *x;
+	double *y, *x;
 
 	if(argc < 2){
 		printf("ERROR: *** wrong parameter format ***\n");
@@ -148,13 +148,13 @@ int main(int argc, char **argv){
 		return ERROR;
 	}
 
-	x = (float *)malloc(cvr.ncol * sizeof(float));
+	x = (double *)malloc(cvr.ncol * sizeof(double));
 	if(NULL == x){
 		printf("ERROR: *** memory overflow in main(), unsufficient memory for x ***\n");
 		return ERROR;
 	}
 
-	y = (float *)malloc(cvr.nrow * sizeof(float));
+	y = (double *)malloc(cvr.nrow * sizeof(double));
 	if(NULL == y){
 		printf("ERROR: *** memory overflow in main(), unsufficient memory for y ***\n");
 		return ERROR;
@@ -164,20 +164,20 @@ int main(int argc, char **argv){
 	for(i = 0; i < cvr.nrow; i++){
 		x[i] = i % 1000;
 	}
-	memset(y, 0, cvr.nrow * sizeof(float));
+	memset(y, 0, cvr.nrow * sizeof(double));
 
 	if(spmv(y, x, &cvr, &csr)){
 		printf("ERROR occured in function spmv()\n");
 		return ERROR;
 	}
 
-	float *y_verify = (float *)malloc(csr.nrow * sizeof(float));
+	double *y_verify = (double *)malloc(csr.nrow * sizeof(double));
 	if(NULL == y_verify){
 		printf("ERROR: *** memory overflow in main(), unsufficient memory for y_verify ***\n");
 		return ERROR;
 	}
-	float sum;
-	memset(y_verify, 0, csr.nrow * sizeof(float));
+	double sum;
+	memset(y_verify, 0, csr.nrow * sizeof(double));
 	for(iteration = 0; iteration < n_iterations; iteration++){
 		for(i = 0; i < csr.nrow; i++){
 			sum = 0;
@@ -196,7 +196,7 @@ int main(int argc, char **argv){
 	for(i = 0; i < csr.nrow; i++){
 		if(func_compare(y[i], y_verify[i])){
 			count++;
-			printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], y[i]);	
+			printf("y[%d] should be %lf, but the result is %lf\n", i, y_verify[i], y[i]);	
 		}
 		if(count > 10){
 			return 0;
@@ -287,10 +287,10 @@ int read_matrix(csr_t *csr, char *filename){
 				}
 			}
 		}else if(field_complex){
-			float im;
+			double im;
 			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
+				sscanf(buffer, "%d %d %lf %lf", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
 				if(coo.triple[i].x != coo.triple[i].y){
 					coo.triple[i+1].x = coo.triple[i].y;
 					coo.triple[i+1].y = coo.triple[i].x;
@@ -301,7 +301,7 @@ int read_matrix(csr_t *csr, char *filename){
 		}else{
 			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
+				sscanf(buffer, "%d %d %lf", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
 				if(coo.triple[i].x != coo.triple[i].y){
 					coo.triple[i+1].x = coo.triple[i].y;
 					coo.triple[i+1].y = coo.triple[i].x;
@@ -318,15 +318,15 @@ int read_matrix(csr_t *csr, char *filename){
 				coo.triple[i].val = 1;
 			}
 		}else if(field_complex){
-			float im;
+			double im;
 			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
+				sscanf(buffer, "%d %d %lf %lf", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
 			}
 		}else{
 			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
+				sscanf(buffer, "%d %d %lf", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
 			}
 		}
 	}
@@ -353,7 +353,7 @@ int read_matrix(csr_t *csr, char *filename){
 	csr->ncol = coo.ncol;
 	csr->nrow = coo.nrow;
 	csr->nnz = coo.nnz;
-	csr->val = (float *)malloc(csr->nnz * sizeof(float));
+	csr->val = (double *)malloc(csr->nnz * sizeof(double));
 	if(NULL == csr->val){
 		printf("ERROR: *** memory overflow in read_matrix(), unsufficient memory for csr->val ***\n");
 		return ERROR;
@@ -408,7 +408,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 		printf("ERROR: *** memory overflow in preprocess(), unsufficient memory for cvr->lrrec_ptr ***\n");
 		return ERROR;
 	}
-	cvr->val_ptr = (float **)malloc(n_threads * sizeof(float *));
+	cvr->val_ptr = (double **)malloc(n_threads * sizeof(double *));
 	if(NULL == cvr->val_ptr){
 		printf("ERROR: *** memory overflow in preprocess(), unsufficient memory for cvr->val_ptr ***\n");
 		return ERROR;
@@ -466,7 +466,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 			int thread_n_vals = (thread_nnz + n_lanes - 1) / n_lanes * n_lanes;
 			int thread_n_recs = (thread_nrow + n_lanes - 1) / n_lanes * n_lanes;
 		
-			cvr->val_ptr[thread_num] = (float *)malloc(thread_n_vals * sizeof(float));
+			cvr->val_ptr[thread_num] = (double *)malloc(thread_n_vals * sizeof(double));
 			if(NULL == cvr->val_ptr[thread_num]){
 				printf("ERROR: *** memory overflow in preprocess() in thread_%d, unsufficient memory for cvr->val_ptr[%d]\n", thread_num, thread_num);
 				exit(ERROR);
@@ -659,7 +659,7 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 
 
 
-int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
+int spmv(double *y, double *x, cvr_t *cvr, csr_t *csr){
 
 	int nnz_per_thread = cvr->nnz / n_threads;
 	int change_thread_nnz = cvr->nnz % n_threads;
@@ -688,20 +688,20 @@ int spmv(float *y, float *x, cvr_t *cvr, csr_t *csr){
 			thread_nnz = thread_end - thread_start + 1;
 
 			//store the temporary result of this thread
-			float *thread_y = (float *)malloc(cvr->nrow * sizeof(float));
+			double *thread_y = (double *)malloc(cvr->nrow * sizeof(double));
 			if(NULL == thread_y){
 				printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
 				exit(ERROR);
 			}
-			memset(thread_y, 0, cvr->nrow * sizeof(float));
+			memset(thread_y, 0, cvr->nrow * sizeof(double));
 
 			//store the intermediate result
-			float *thread_temp = (float *)malloc(n_lanes * sizeof(float));
+			double *thread_temp = (double *)malloc(n_lanes * sizeof(double));
 			if(NULL == thread_temp){
 				printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
 				exit(ERROR);
 			}
-			memset(thread_temp, 0, n_lanes * sizeof(float));
+			memset(thread_temp, 0, n_lanes * sizeof(double));
 
 			int rec_idx = 0;
 			int offset, writeback;
