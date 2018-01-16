@@ -4,7 +4,7 @@
 typedef struct triple{
 	int x;
 	int y;
-	float val;
+	double val;
 }triple_t;
 
 typedef struct coo{
@@ -15,7 +15,7 @@ typedef struct coo{
 }coo_t; // coordinate format
 
 typedef struct csr{
-	float *val;
+	double *val;
 	int *col_idx;
 	int *row_ptr;
 	int ncol;
@@ -24,7 +24,7 @@ typedef struct csr{
 }csr_t; // compressed sparse row format
 
 typedef struct cvr{
-	float **val_ptr;
+	double **val_ptr;
 	int **colidx_ptr;
 	int **rec_ptr;
 	int *lrrec_ptr;
@@ -46,7 +46,7 @@ void print_thread(int thread_num);
 //void print_cvr_thread_info(cvr_t *cvr, int thread_num);
 
 void print_matrix(csr_t *csr);
-void print_vector(float *x, int n);
+void print_vector(double *x, int n);
 
 void print_cvr_detail(cvr_t *cvr, int thread_num, int thread_nnz, int thread_nrow, int n_lanes);
 
@@ -55,7 +55,7 @@ void print_coo_n(coo_t *coo, int n){
 	int i;
 	printf("\ncoo format:\n");
 	for(i = 0; i < n; i++){
-		printf("%d %d %f\n", coo->triple[i].x, coo->triple[i].y, coo->triple[i].val);
+		printf("%d %d %lf\n", coo->triple[i].x, coo->triple[i].y, coo->triple[i].val);
 	}
 	printf("\n");
 }
@@ -151,7 +151,7 @@ void print_matrix(csr_t *csr){
 		printf("\n");
 	}
 }
-void print_vector(float *x, int n){
+void print_vector(double *x, int n){
 	int i;
 	printf("\nvector:\n");
 	for(i = 0; i < n; i++){
