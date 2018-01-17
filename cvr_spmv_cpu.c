@@ -11,7 +11,7 @@
 #define FIELD_LENGTH 128
 #define COO_BASE 0
 
-#define MATRIX_DEBUG
+//#define MATRIX_DEBUG
 #ifdef MATRIX_DEBUG
 #include"matrix_debug.h"
 #else
