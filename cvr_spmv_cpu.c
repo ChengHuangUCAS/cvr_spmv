@@ -160,10 +160,10 @@ int main(int argc, char **argv){
 	}
 
 	int i, j, iteration;
-	for(i = 0; i < cvr.nrow; i++){
+	for(i = 0; i < csr.nrow; i++){
 		x[i] = i % 1000;
 	}
-	memset(y, 0, cvr.nrow * sizeof(double));
+	memset(y, 0, csr.nrow * sizeof(double));
 
 	struct timeval tv1, tv2;
 	struct timezone tz1, tz2;
