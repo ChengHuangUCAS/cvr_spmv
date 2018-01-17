@@ -3,6 +3,8 @@
 #include<string.h>
 #include<omp.h>
 
+#include<sys/time.h>
+
 #define OK 0
 #define ERROR 1
 
@@ -129,32 +131,29 @@ int main(int argc, char **argv){
 	}
 	char *filename = argv[1];
 
-// ARGUEMENTS: unimportant for now
-/*
 	if(argc > 2){
 		n_threads = atoi(argv[2]);
 		if(4 == argc){
 			n_iterations = atoi(argv[3]);
 		}
 	}
-*/
+	
+	printf("Input file: %s\n", filename);
+	printf("Number of threads: %d\n", n_threads);
+	printf("Number of iterations: %d\n\n", n_iterations);
+
 	if(read_matrix(&csr, filename)){
 		printf("ERROR occured in function read_matrix()\n");
 		return ERROR;
 	}
 
-	if(preprocess(&cvr, &csr)){
-		printf("ERROR occured in function preprocess()\n");
-		return ERROR;
-	}
-
-	x = (double *)malloc(cvr.ncol * sizeof(double));
+	
+	x = (double *)malloc(csr.ncol * sizeof(double));
 	if(NULL == x){
 		printf("ERROR: *** memory overflow in main(), unsufficient memory for x ***\n");
 		return ERROR;
 	}
-
-	y = (double *)malloc(cvr.nrow * sizeof(double));
+	y = (double *)malloc(csr.nrow * sizeof(double));
 	if(NULL == y){
 		printf("ERROR: *** memory overflow in main(), unsufficient memory for y ***\n");
 		return ERROR;
@@ -166,10 +165,25 @@ int main(int argc, char **argv){
 	}
 	memset(y, 0, cvr.nrow * sizeof(double));
 
+	struct timeval tv1, tv2;
+	struct timezone tz1, tz2;
+	long tv_diff1, tv_diff2;
+
+	gettimeofday(&tv1, &tz1);
+	// PREPROCESS
+	if(preprocess(&cvr, &csr)){
+		printf("ERROR occured in function preprocess()\n");
+		return ERROR;
+	}
+
+	// SPMV KERNEL
 	if(spmv(y, x, &cvr, &csr)){
 		printf("ERROR occured in function spmv()\n");
 		return ERROR;
 	}
+	gettimeofday(&tv2, &tz2);
+	tv_diff1 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+	printf("cvr time(usec): %ld\n", tv_diff1);
 
 	double *y_verify = (double *)malloc(csr.nrow * sizeof(double));
 	if(NULL == y_verify){
@@ -178,7 +192,10 @@ int main(int argc, char **argv){
 	}
 	double sum;
 	memset(y_verify, 0, csr.nrow * sizeof(double));
+
+	gettimeofday(&tv1, &tz1);
 	for(iteration = 0; iteration < n_iterations; iteration++){
+		#pragma omp parallel for num_threads(n_threads)
 		for(i = 0; i < csr.nrow; i++){
 			sum = 0;
 			for(j = csr.row_ptr[i]; j < csr.row_ptr[i+1]; j++){
@@ -187,6 +204,10 @@ int main(int argc, char **argv){
 			y_verify[i] += sum;
 		}
 	}
+	gettimeofday(&tv2, &tz2);
+	tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+	printf("csr time(usec): %ld\n", tv_diff2);
+
 
 //DEBUG: Y_VERIFY
 //print_vector(y_verify, csr.nrow);
@@ -217,6 +238,8 @@ int read_matrix(csr_t *csr, char *filename){
 		printf("ERROR: *** cannot open file: %s ***\n", filename);
 		return ERROR;
 	}
+	
+	printf("Reading matrix...\n");
 
 	char buffer[1024];
 	char id[FIELD_LENGTH], object[FIELD_LENGTH], format[FIELD_LENGTH], field[FIELD_LENGTH], symmetry[FIELD_LENGTH];
@@ -680,6 +703,7 @@ int spmv(double *y, double *x, cvr_t *cvr, csr_t *csr){
 
 			//thread information
 			int thread_start, thread_end, thread_nnz;
+			int thread_start_row, thread_end_row;
 			if(thread_num < change_thread_nnz){
 				thread_start = thread_num * nnz_per_thread + thread_num * 1;
 				thread_end = (thread_num + 1) * nnz_per_thread + (thread_num + 1) * 1 - 1;
@@ -688,46 +712,59 @@ int spmv(double *y, double *x, cvr_t *cvr, csr_t *csr){
 				thread_end = (thread_num + 1) * nnz_per_thread + change_thread_nnz * 1 - 1;
 			}
 			thread_nnz = thread_end - thread_start + 1;
+			// IF0
+			if(thread_nnz > 0){
+				thread_start_row = func_get_row(thread_start, csr);
+				thread_end_row = func_get_row(thread_end, csr);
 
-			//store the temporary result of this thread
-			double *thread_y = (double *)malloc(cvr->nrow * sizeof(double));
-			if(NULL == thread_y){
-				printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
-				exit(ERROR);
-			}
-			memset(thread_y, 0, cvr->nrow * sizeof(double));
+				//store the temporary result of this thread
+				double *thread_y = (double *)malloc(cvr->nrow * sizeof(double));
+				if(NULL == thread_y){
+					printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
+					exit(ERROR);
+				}
+				memset(thread_y, 0, cvr->nrow * sizeof(double));
 
-			//store the intermediate result
-			double *thread_temp = (double *)malloc(n_lanes * sizeof(double));
-			if(NULL == thread_temp){
-				printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
-				exit(ERROR);
-			}
-			memset(thread_temp, 0, n_lanes * sizeof(double));
+				//store the intermediate result
+				double *thread_temp = (double *)malloc(n_lanes * sizeof(double));
+				if(NULL == thread_temp){
+					printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
+					exit(ERROR);
+				}
+				memset(thread_temp, 0, n_lanes * sizeof(double));
 
-			int rec_idx = 0;
-			int offset, writeback;
-			int i, j;
-			//FOR2
-
-			for(i = 0; i < (thread_nnz + n_lanes - 1) / n_lanes; i++){
+				int rec_idx = 0;
+				int offset, writeback;
+				int i, j;
+				//FOR2
+				for(i = 0; i < (thread_nnz + n_lanes - 1) / n_lanes; i++){
 //DEBUG: ITERATOR
 //printf("iteration %d/%d\n", i, (thread_nnz + n_lanes - 1) / n_lanes);
 //ENDDEBUG: ITERATOR
-				for(j = 0; j < n_lanes; j++){
-					int x_offset = cvr->colidx_ptr[thread_num][i*n_lanes+j];
-					thread_temp[j] += cvr->val_ptr[thread_num][i*n_lanes+j] * x[x_offset];
-				}
-				//corresponding to tracker feeding part
-				if(cvr->rec_ptr[thread_num][rec_idx] < cvr->lrrec_ptr[thread_num]){
-					//more than one temporary result could be processed here
-					while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i){
-						if(cvr->rec_ptr[thread_num][rec_idx] < cvr->lrrec_ptr[thread_num]){
-							offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
-							writeback = cvr->rec_ptr[thread_num][rec_idx++];
-							thread_y[writeback] = thread_temp[offset];
-							thread_temp[offset] = 0;
-						}else{ // in case rec[rec_idx] < lrrec < rec[rec_idx+2]
+					for(j = 0; j < n_lanes; j++){
+						int x_offset = cvr->colidx_ptr[thread_num][i*n_lanes+j];
+						thread_temp[j] += cvr->val_ptr[thread_num][i*n_lanes+j] * x[x_offset];
+					}
+					//corresponding to tracker feeding part
+					if(cvr->rec_ptr[thread_num][rec_idx] < cvr->lrrec_ptr[thread_num]){
+						//more than one temporary result could be processed here
+						while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i){
+							if(cvr->rec_ptr[thread_num][rec_idx] < cvr->lrrec_ptr[thread_num]){
+								offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
+								writeback = cvr->rec_ptr[thread_num][rec_idx++];
+								thread_y[writeback] = thread_temp[offset];
+								thread_temp[offset] = 0;
+							}else{ // in case rec[rec_idx] < lrrec < rec[rec_idx+2]
+								offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
+								writeback = cvr->rec_ptr[thread_num][rec_idx++];
+								if(-1 != cvr->tail_ptr[thread_num][writeback]){
+									thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
+								}
+								thread_temp[offset] = 0;
+							}
+						}
+					}else{//corresponding to tracker stealing part
+						while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i){
 							offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
 							writeback = cvr->rec_ptr[thread_num][rec_idx++];
 							if(-1 != cvr->tail_ptr[thread_num][writeback]){
@@ -736,24 +773,19 @@ int spmv(double *y, double *x, cvr_t *cvr, csr_t *csr){
 							thread_temp[offset] = 0;
 						}
 					}
-				}else{//corresponding to tracker stealing part
-					while(cvr->rec_ptr[thread_num][rec_idx] / n_lanes == i){
-						offset = cvr->rec_ptr[thread_num][rec_idx++] % n_lanes;
-						writeback = cvr->rec_ptr[thread_num][rec_idx++];
-						if(-1 != cvr->tail_ptr[thread_num][writeback]){
-							thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
-						}
-						thread_temp[offset] = 0;
-					}
-				}
-			} //ENDFOR2
+				} //ENDFOR2
 
-			//this can be optimized by exchange PRAGMA and FOR LOOP, vector y is updated after the last iteration 
-			for(i = 0; i < cvr->nrow; i++){
 				#pragma omp atomic
-				y[i] += thread_y[i];
-			}
-
+				y[thread_start_row] += thread_y[thread_start_row];
+				if(thread_start_row != thread_end_row){
+					#pragma omp atomic
+					y[thread_end_row] += thread_y[thread_end_row];
+				}
+				
+				for(i = thread_start_row + 1; i < thread_end_row; i++){
+					y[i] += thread_y[i];
+				}
+			} //ENDIF0
 //printf("thread_%d complete\n", thread_num);
 //}
 //ENDDEBUG: THREAD
