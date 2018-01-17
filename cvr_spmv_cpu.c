@@ -195,7 +195,7 @@ int main(int argc, char **argv){
 
 	gettimeofday(&tv1, &tz1);
 	for(iteration = 0; iteration < n_iterations; iteration++){
-		#pragma omp parallel for num_threads(n_threads) private(sum)
+		#pragma omp parallel for num_threads(n_threads) private(sum, j)
 		for(i = 0; i < csr.nrow; i++){
 			sum = 0;
 			for(j = csr.row_ptr[i]; j < csr.row_ptr[i+1]; j++){
