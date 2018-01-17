@@ -67,7 +67,7 @@ int func_get_row(int valID, csr_t *csr){
 	while(start <= end){
 		if(csr->row_ptr[mid] > valID){
 			end = mid - 1;
-		}else if(csr->row_ptr[mid+1] <= valID){
+		}else if(mid < csr->nrow && csr->row_ptr[mid+1] <= valID){
 			start = mid + 1;
 		}else{
 			while(mid < csr->nrow && csr->row_ptr[mid] == csr->row_ptr[mid+1]){
