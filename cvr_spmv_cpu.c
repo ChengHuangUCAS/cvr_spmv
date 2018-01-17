@@ -464,7 +464,9 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 
 			//padding is needed
 			int thread_n_vals = (thread_nnz + n_lanes - 1) / n_lanes * n_lanes;
-			int thread_n_recs = (thread_nrow + n_lanes - 1) / n_lanes * n_lanes;
+			// note: ADD n_lanes is necessary because "stealing" also needs to be recorded,
+			//       and stealing time is less than n_lanes
+			int thread_n_recs = (thread_nrow + n_lanes - 1) / n_lanes * n_lanes + n_lanes;
 		
 			cvr->val_ptr[thread_num] = (double *)malloc(thread_n_vals * sizeof(double));
 			if(NULL == cvr->val_ptr[thread_num]){
