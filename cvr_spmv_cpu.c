@@ -670,11 +670,15 @@ int preprocess(cvr_t *cvr, csr_t *csr){
 //#pragma omp critical
 //print_cvr_detail(cvr, thread_num, thread_nnz, thread_nrow, n_lanes);
 //ENDDEBUG: CVR DETAIL
+			free(thread_rowID);
+			free(thread_valID);
+			free(thread_count);
 		} //ENDIF0
 
 //printf("thread_%d complete\n", thread_num);
 //}
 //ENDDEBUG: THREAD
+
 	} //ENDPRAGMA
 
 	printf("OK!\n\n");
@@ -785,10 +789,13 @@ int spmv(double *y, double *x, cvr_t *cvr, csr_t *csr){
 				for(i = thread_start_row + 1; i < thread_end_row; i++){
 					y[i] += thread_y[i];
 				}
+				free(thread_y);
+				free(thread_temp);
 			} //ENDIF0
 //printf("thread_%d complete\n", thread_num);
 //}
 //ENDDEBUG: THREAD
+
 
 		} //ENDPRAGMA
 	} //ENDFOR1: iteration
