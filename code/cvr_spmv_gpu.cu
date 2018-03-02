@@ -148,12 +148,11 @@ inline void func_initialData(floatType *ip, int size){
 // 0-based Matrix Market format -> CSR format
 int read_matrix(csr_t *csr, char *filename);
 // CSR format -> CVR format
-int preprocess(cvr_t *d_cvr, csr_t *d_csr, csr_t *h_csr, int *rowID, int *valID, int *count);
+int preprocess(cvr_t *d_cvr, csr_t *d_csr);
 // CVR format SpMV, y = y + M * x
 int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, csr_t *h_csr);
 
-__global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr, int const nnz_per_block, int const change_block_nnz, \
-	int *rowID, int *valID, int *count);
+__global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr);
 __global__ void spmv_kernel();
 
 // however, in this implementation, only one dimension is used for intuition
@@ -163,7 +162,7 @@ int n_iterations = 1;
 
 int main(int argc, char **argv){
 
-/****  runtime configuration  ****/
+	/****  runtime configuration  ****/
 
 	if(argc < 2){
 		printf("ERROR: *** wrong parameter format ***\n");
@@ -179,20 +178,20 @@ int main(int argc, char **argv){
 //		}
 //	}
 
-/****  \runtime configuration  ****/
+	/****  \runtime configuration  ****/
 
 
-/****  basic runtime information  ****/
+	/****  basic runtime information  ****/
 
 	printf("Input file: %s\n", filename);
 	printf("Grid dimension: (%d, %d, %d)\n", gridDim[0], gridDim[1], gridDim[2]);
 	printf("Block dimension: (%d, %d, %d)\n", blockDim[0], blockDim[1], blockDim[2]);
 	printf("Number of iterations: %d\n\n", n_iterations);
 
-/****  \basic runtime information  ****/
+	/****  \basic runtime information  ****/
 
 
-/****  prepare host_csr  ****/
+	/****  prepare host_csr  ****/
 
 	//allocate memory
 	csr_t *h_csr = (csr_t *)malloc(sizeof(csr_t));
@@ -204,10 +203,10 @@ int main(int argc, char **argv){
 		return ERROR;
 	}
 
-/****  \prepare host_csr  ****/
+	/****  \prepare host_csr  ****/
 
 
-/****  prepare and device_csr  ****/
+	/****  prepare and device_csr  ****/
 
 	csr_t *d_csr = NULL;
 	//allocate device global memory
@@ -222,10 +221,10 @@ int main(int argc, char **argv){
 	CHECK(cudaMemcpy(d_csr->col_idx, h_csr->col_idx, h_csr->nnz * sizeof(int), cudaMemcpyHostToDevice));
 	CHECK(cudaMemcpy(d_csr->row_ptr, h_csr->row_ptr, (h_csr->nrow + 1) * sizeof(int), cudaMemcpyHostToDevice));
 
-/****  \prepare device_csr  ****/
+	/****  \prepare device_csr  ****/
 
 
-/****  prepare device_cvr  ****/
+	/****  prepare device_cvr  ****/
 
 	cvr_t *d_cvr = NULL;
 	//cvr structure is dependent on matrix and runtime configuration
@@ -233,7 +232,9 @@ int main(int argc, char **argv){
 	int n_block_threads = blockDim[0] * blockDim[1] * blockDim[2];
 	int n_block_nnz = h_csr->nnz / n_blocks;
 	int change_block_nnz = h_csr->nnz % n_blocks;
-	int n_block_vals = (n_block_nnz + 1 + n_block_threads - 1) / n_block_threads * n_block_threads;
+	// n_block_vals: aligned upperbond of number of values/column indexes per block
+	// +1: blocks before change_block_nnz has n_block_nnz+1 values
+	int n_block_vals = ((n_block_nnz + 1) + n_block_threads - 1) / n_block_threads * n_block_threads;
 	int n_block_recs = n_block_vals + n_block_threads;
 
 	//allocate device global memory
@@ -247,10 +248,10 @@ int main(int argc, char **argv){
 	//initialize
 	CHECK(cudaMemcpy(d_cvr, h_csr, 3 * sizeof(int), cudaMemcpyHostToDevice));
 
-/****  \prepare device_cvr  ****/
+	/****  \prepare device_cvr  ****/
 
 
-/****  prepare host_x, device_x, host_y, device_y and verify_y  ****/
+	/****  prepare host_x, device_x, host_y, device_y and verify_y  ****/
 
 	//allocate memory
 	floatType *h_x = (floatType *)malloc(h_csr->ncol * sizeof(floatType));
@@ -271,50 +272,51 @@ int main(int argc, char **argv){
 	CHECK(cudaMemset(d_y, 0, h_csr->nrow * sizeof(floatType)));
 	memset(y_verify, 0, h_csr->nrow * sizeof(floatType));
 
-/****  \prepare host_x, device_x, host_y, device_y and verify_y  ****/
+	/****  \prepare host_x, device_x, host_y, device_y and verify_y  ****/
 
 
-/****  launch kernels  ****/
+	/****  launch kernels  ****/
 
-	struct timeval tv1, tv2;
-	long tv_diff1, tv_diff2;
-	gettimeofday(&tv1, NULL);
+//	struct timeval tv1, tv2;
+//	long tv_diff1, tv_diff2;
+//	gettimeofday(&tv1, NULL);
+
 	// trackers for preprocessing
-	int *thread_rowID = NULL, *thread_valID = NULL, *thread_count = NULL;
-	CHECK(cudaMalloc(&thread_rowID, n_block_threads * sizeof(int)));
-	CHECK(cudaMalloc(&thread_valID, n_block_threads * sizeof(int)));
-	CHECK(cudaMalloc(&thread_count, n_block_threads * sizeof(int)));
+//	int *thread_rowID = NULL, *thread_valID = NULL, *thread_count = NULL;
+//	CHECK(cudaMalloc(&thread_rowID, n_block_threads * sizeof(int)));
+//	CHECK(cudaMalloc(&thread_valID, n_block_threads * sizeof(int)));
+//	CHECK(cudaMalloc(&thread_count, n_block_threads * sizeof(int)));
 	// PREPROCESS
-	if(preprocess(d_cvr, d_csr, h_csr, thread_rowID, thread_valID, thread_count)){
+	if(preprocess(d_cvr, d_csr, thread_rowID, thread_valID, thread_count)){
 		printf("ERROR occured in function preprocess()\n");
 		return ERROR;
 	}
 	
-
 	// SPMV KERNEL
 	if(spmv(d_y, d_x, d_cvr, d_csr, h_csr)){
 		printf("ERROR occured in function spmv()\n");
 		return ERROR;
 	}
-	gettimeofday(&tv2, NULL);
-	tv_diff1 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
-	printf("cvr time(usec): %ld\n", tv_diff1);
 
-/****  \launch kernels  ****/
+//	gettimeofday(&tv2, NULL);
+//	tv_diff1 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+//	printf("cvr time(usec): %ld\n", tv_diff1);
+
+	/****  \launch kernels  ****/
 
 
-/****  copy back  ****/
+	/****  copy back  ****/
 
 	CHECK(cudaMemcpy(h_y, d_y, h_csr->nrow * sizeof(floatType), cudaMemcpyDeviceToHost));
 
-/****  \copy back  ****/
+	/****  \copy back  ****/
 
 
-/****  free device memory  ****/
+	/****  free device memory  ****/
 
-	CHECK(cudaFree(thread_rowID));
-	CHECK(cudaFree(thread_valID));
-	CHECK(cudaFree(thread_count));
+//	CHECK(cudaFree(thread_rowID));
+//	CHECK(cudaFree(thread_valID));
+//	CHECK(cudaFree(thread_count));
 
 	CHECK(cudaFree(d_x));
 	CHECK(cudaFree(d_y));
@@ -331,12 +333,13 @@ int main(int argc, char **argv){
 	CHECK(cudaFree(&d_csr->row_ptr));
 	CHECK(cudaFree(&d_csr));
 
-/****  \free device memory  ****/
+	/****  \free device memory  ****/
 
 
-/****  compute y_verify using csr spmv  ****/
+	/****  compute y_verify using csr spmv  ****/
 
-	gettimeofday(&tv1, NULL);
+//	gettimeofday(&tv1, NULL);
+
 	for(int iteration = 0; iteration < n_iterations; iteration++){
 		#pragma omp parallel for num_threads(omp_get_num_threads())
 		floatType sum;
@@ -348,15 +351,16 @@ int main(int argc, char **argv){
 			y_verify[i] += sum;
 		}
 	}
-	gettimeofday(&tv2, NULL);
-	tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
-	printf("csr time(usec): %ld\n", tv_diff2);
 
-/****  \compute y_verify using csr spmv  ****/
+//	gettimeofday(&tv2, NULL);
+//	tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+//	printf("csr time(usec): %ld\n", tv_diff2);
+
+	/****  \compute y_verify using csr spmv  ****/
 
 
-/****  check the result  ****/
-	
+	/****  check the result  ****/
+
 	int count = 0;
 	for(int i = 0; i < h_csr->nrow; i++){
 		if(func_compare(h_y[i], y_verify[i]) != CMP_EQUAL){
@@ -364,14 +368,29 @@ int main(int argc, char **argv){
 			printf("y[%d] should be %lf, but the result is %lf\n", i, y_verify[i], h_y[i]);	
 		}
 		if(count > 10){
-			return 0;
+			break;
 		}
 	}
+
 	if(0 == count){
 		printf("Correct\n");
 	}
 
-/****  \check the result  ****/
+	/****  \check the result  ****/
+
+
+	/****  free host memory  ****/
+
+	free(h_x);
+	free(h_y);
+	free(y_verify);
+
+	free(h_csr->val);
+	free(h_csr->col_idx);
+	free(h_csr->row_ptr);
+	free(h_csr);
+
+	/****  \free host memory  ****/
 
 	return 0;
 }
@@ -545,17 +564,13 @@ int read_matrix(csr_t *csr, char *filename){
 
 
 
-int preprocess(cvr_t *d_cvr, csr_t *d_csr, csr_t *h_csr, int *rowID, int *valID, int *count){
+int preprocess(cvr_t *d_cvr, csr_t *d_csr){
 	printf("\nPreprocess start.\n");
 
 	dim3 grid(gridDim[0], gridDim[1], gridDim[2]);
 	dim3 block(blockDim[0], blockDim[1], blockDim[2]);
 
-	int n_blocks = blockDim[0] * blockDim[1] * blockDim[2];
-	int nnz_per_block = h_csr->nnz / n_blocks;
-	int change_block_nnz = h_csr->nnz % n_blocks;
-
-	preprocess_kernel<<<grid, block>>>(d_cvr, d_csr, nnz_per_block, change_block_nnz, rowID, valID, count);
+	preprocess_kernel<<<grid, block>>>(d_cvr, d_csr);
 	CHECK(cudaGetLastError());
 	cudaDeviceSynchronize();
 
@@ -588,23 +603,42 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, csr_t *h_cs
 
 
 
-__global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr, int const nnz_per_block, int const change_block_nnz, \
-	int *rowID, int *valID, int *count){
+__global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 	// general case
-	unsigned int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
-	unsigned int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
-	unsigned int threads_per_block = blockDim.x * blockDim.y * blockDim.z;
-	unsigned int thread_num = block_num * threads_per_block + thread_offset;
+	/* 
+	** Basic information of block and thread:
+	**   block_num:         current block id
+	**   thread_offset:     current thread id in this block
+	**   threads_per_block: number of threads in a block
+	**   thread_num:        current thread id in global vision
+	**   n_blocks:          number of blocks in this grid
+	*/
+	int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
+	int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
+	int threads_per_block = blockDim.x * blockDim.y * blockDim.z;
+	int thread_num = block_num * threads_per_block + thread_offset;
+	int n_blocks = blockDim[0] * blockDim[1] * blockDim[2];
 
 	// 1-dimension case
-	//unsigned int block_num = blockIdx.x;
-	//unsigned int thread_offset = threadIdx.x;
-	//unsigned int threads_per_block = blockDim.x;
-	//unsigned int thread_num = block_num * threads_per_block + thread_offset;
+	//int block_num = blockIdx.x;
+	//int thread_offset = threadIdx.x;
+	//int threads_per_block = blockDim.x;
+	//int thread_num = block_num * threads_per_block + thread_offset;
 
+	/*
+	** Information of non-zeros in a block
+	**   block_start/block_end:         first/last non-zero's id in this block
+	**   block_nnz:                     number of non-zeros in this block
+	**   block_start_row/block_end_row: first/last non-zero's row id in this block
+	**   block_nrow:                    number of rows of non-zeros in this block
+	**   nnz_per_block:                 average number of non-zeros in a block
+	**   change_block_nnz:              first n blocks have one more non-zeros than others, n=change_block_nnz
+	*/
+	int block_start, block_end, block_nnz;
+	int block_start_row, block_end_row, block_nrow;
 
-	unsigned int block_start, block_end, block_nnz;
-	unsigned int block_start_row, block_end_row, block_nrow;
+	int nnz_per_block = csr->nnz / n_blocks;
+	int change_block_nnz = csr->nnz % n_blocks;
 
 	// information about row range and non-zeros in this block
 	if(block_num < change_block_nnz){
@@ -616,20 +650,32 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr, int const nnz_per_bloc
 	}
 	block_nnz = block_end - block_start + 1;
 
-	// IF0: non-empty block
+	// IF0: this block has at least one non-zero to deal with 
+	// ELSE0 is empty
 	if(block_nnz > 0){
 		block_start_row = func_get_row(block_start, d_csr);
 		block_end_row = func_get_row(block_end, d_csr);
 		block_nrow = block_end_row - block_start_row + 1;
 
+		/*
+		**   block_n_vals: number of values needed to store, must be less than n_block_vals in main()
+		**   block_n_recs: number of records needed to store, must be less than n_block_recs in main()
+		*/
 		int block_n_vals = (block_nnz + threads_per_block - 1) / threads_per_block * threads_per_block;
 		int block_n_recs = (block_nrow + threads_per_block * 2 - 1) / threads_per_block * threads_per_block;
 
+		/*
+		** Trackers
+		**   valID: id of non-zero that is preprocessing by current thread
+		**   rowID: row id of non-zero that is preprocessing by current thread
+		**   count: number of non-zeros haven't been preprocessed in this row
+		**   cur_row: row id of this row, used to traverse rows in the matrix
+		*/
 		int valID, rowID, count;
-		__shared__ int rs = block_start_row;
+		__shared__ int cur_row = block_start_row;
 
 		// initialize valID, rowID, count for preprocessing
-		rowID = rs + thread_offset;
+		rowID = cur_row + thread_offset;
 		if(rowID > block_end_row){
 			rowID = -1;
 			valID = -1;
@@ -647,12 +693,12 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr, int const nnz_per_bloc
 			valID -= block_start;
 		}
 		if(thread_num == 0){
-			rs += threads_per_block;
+			cur_row += threads_per_block;
 		}
 		__syncthreads();
 
 		//IF1: if the number of rows is less than threads_per_block, initialize tail_ptr
-		if(rs > block_end_row){
+		if(cur_row > block_end_row){
 			cvr->tail_ptr[thread_num] = rowID;
 			if(rowID != -1){
 				rowID = thread_num;
