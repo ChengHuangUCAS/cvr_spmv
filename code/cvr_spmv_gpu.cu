@@ -110,26 +110,6 @@ __device__ inline int func_get_row(int valID, csr_t *csr){
 	exit(ERROR);
 }
 
-/*
-// auxiliary function to get AND result
-inline int func_AND(int *val, int n){
-	int result = 1, i;
-	for(i = 0; i < n; i++){
-		result = result && val[i];
-	}
-	return result;
-}
-
-// auxiliary function to get average count
-inline int func_average(int *count, int n){
-	int sum = 0, i;
-	for(i = 0; i < n; i++){
-		sum += count[i];
-	}
-	return (sum + n - 1) / n;
-}
-*/
-
 // auxiliary function to compare result
 inline int func_compare(floatType y, floatType y_verify){
 	if(y - y_verify < -0.0001 || y - y_verify > 0.0001){
@@ -152,14 +132,15 @@ int read_matrix(csr_t *csr, char *filename);
 // CSR format -> CVR format
 int preprocess(cvr_t *d_cvr, csr_t *d_csr);
 // CVR format SpMV, y = y + M * x
-int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, csr_t *h_csr);
+int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr);
 
 __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr);
-__global__ void spmv_kernel();
+__global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr);
 
 // however, in this implementation, only one dimension is used for intuition
 int gridDim[3] = {1, 1, 1};
 int blockDim[3] = {1, 1, 1};
+
 int n_iterations = 1;
 
 int main(int argc, char **argv){
@@ -230,18 +211,21 @@ int main(int argc, char **argv){
 
 	cvr_t *d_cvr = NULL;
 	//cvr structure is dependent on matrix and runtime configuration
+	/*
+	**  n_blocks: total number of blocks in this grid
+	**  threads_per_block: number of threads in a block
+	**  n_threads: total number of threads in this grid
+	**  n_warps: total number of warps in this grid
+	**  n_warp_nnz: average number of non-zeros dealed by one warp
+	**  n_warp_vals: upper bond of number of non-zeros dealed by one warp, aligned
+	**  n_warp_recs: upper bond of records needed by one warp, aligned
+	*/
 	int n_blocks = gridDim[0] * gridDim[1] * gridDim[2];
 	int threads_per_block = blockDim[0] * blockDim[1] * blockDim[2];
 	int n_threads = n_blocks * threads_per_block;
-//	int n_block_nnz = h_csr->nnz / n_blocks;
-//	int change_block_nnz = h_csr->nnz % n_blocks;
+
 	int n_warps = n_threads / THREADS_PER_WARP;
 	int n_warp_nnz = h_csr->nnz / n_warps;
-//	int change_warp_nnz;
-	// n_block_vals: aligned upperbond of number of values/column indexes per block
-	// +1: blocks before change_block_nnz has n_block_nnz+1 values
-//	int n_block_vals = ((n_block_nnz + 1) + n_block_threads - 1) / n_block_threads * n_block_threads;
-//	int n_block_recs = n_block_vals + n_block_threads;
 	int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
 	int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
 
@@ -290,11 +274,6 @@ int main(int argc, char **argv){
 //	long tv_diff1, tv_diff2;
 //	gettimeofday(&tv1, NULL);
 
-	// trackers for preprocessing
-//	int *thread_rowID = NULL, *thread_valID = NULL, *thread_count = NULL;
-//	CHECK(cudaMalloc(&thread_rowID, n_block_threads * sizeof(int)));
-//	CHECK(cudaMalloc(&thread_valID, n_block_threads * sizeof(int)));
-//	CHECK(cudaMalloc(&thread_count, n_block_threads * sizeof(int)));
 	// PREPROCESS
 	if(preprocess(d_cvr, d_csr)){
 		printf("ERROR occured in function preprocess()\n");
@@ -322,10 +301,6 @@ int main(int argc, char **argv){
 
 
 	/****  free device memory  ****/
-
-//	CHECK(cudaFree(thread_rowID));
-//	CHECK(cudaFree(thread_valID));
-//	CHECK(cudaFree(thread_count));
 
 	CHECK(cudaFree(d_x));
 	CHECK(cudaFree(d_y));
@@ -405,7 +380,13 @@ int main(int argc, char **argv){
 }
 
 
-
+/*
+** function: read_matrix()
+**     read matrix from MMF file and covert it to csr format
+** parameters:
+**     csr_t *csr         allocated csr_t pointer
+**     char *filename     Matrix Market Format file
+*/
 int read_matrix(csr_t *csr, char *filename){
 	FILE *fp = fopen(filename, "r");
 	if(!fp){
@@ -572,7 +553,13 @@ int read_matrix(csr_t *csr, char *filename){
 }
 
 
-
+/*
+** function: preprocess()
+**     convert csr format to cvr format
+** parameters:
+**     cvr_t *d_cvr       allocated cvr_t pointer(device)
+**     csr_t *d_csr       initialized csr_t pointer(device)
+*/
 int preprocess(cvr_t *d_cvr, csr_t *d_csr){
 	printf("\nPreprocess start.\n");
 
@@ -589,8 +576,15 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr){
 }
 
 
-
-int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, csr_t *h_csr){
+/*
+** function: spmv()
+**     sparse matrix-vector multiplication using cvr format
+** parameters:
+**     floatType *d_y     allocated pointer(device) to store result y
+**     floatType *d_x     initialized pointer(device) to store vector x
+**     cvr_t *d_cvr       allocated cvr_t pointer(device)
+*/
+int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr){
 	printf("\nSparse Matrix-Vector multiply start.\n");
 
 	dim3 grid(gridDim[0], gridDim[1], gridDim[2]);
@@ -599,8 +593,7 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, csr_t *h_cs
 	int iteration;
 	//FOR1
 	for(iteration = 0; iteration < n_iterations; iteration++){
-		spmv_kernel<<<grid, block>>>\
-			();
+		spmv_kernel<<<grid, block>>>(d_y, d_x, d_cvr);
 		CHECK(cudaGetLastError());
 		cudaDeviceSynchronize();
 	} //ENDFOR1: iteration
@@ -971,7 +964,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 }
 
 
-__global__ void spmv_kernel(){
+__global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
 
 	int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
 	int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
