@@ -110,6 +110,7 @@ __device__ inline int func_get_row(int valID, csr_t *csr){
 	exit(ERROR);
 }
 
+/*
 // auxiliary function to get AND result
 inline int func_AND(int *val, int n){
 	int result = 1, i;
@@ -127,6 +128,7 @@ inline int func_average(int *count, int n){
 	}
 	return (sum + n - 1) / n;
 }
+*/
 
 // auxiliary function to compare result
 inline int func_compare(floatType y, floatType y_verify){
@@ -253,6 +255,7 @@ int main(int argc, char **argv){
 
 	//initialize
 	CHECK(cudaMemcpy(d_cvr, h_csr, 3 * sizeof(int), cudaMemcpyHostToDevice));
+	CHECK(cudaMemset(d_cvr->rec, 0, n_warps * n_warp_recs * sizeof(record_t)));
 
 	/****  \prepare device_cvr  ****/
 
@@ -823,7 +826,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 						}
 						if(0 == lane_num){
 							temp_rec_threshold += (i - 1) * THREADS_PER_WARP;
-							cvr->rec_threshold_ptr[warp_num] = temp_rec_threshold < 0 ? 0 : temp_rec_threshold;
+							cvr->rec_threshold[warp_num] = temp_rec_threshold < 0 ? 0 : temp_rec_threshold;
 						}
 					}// END IF6
 
@@ -967,96 +970,95 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 
 }
 
-//---------------------------------------------------------------------------------------
 
 __global__ void spmv_kernel(){
-	#pragma omp parallel num_threads(n_blocks)
-		{
-			int thread_num = omp_get_thread_num();
 
-			//thread information
-			int thread_start, thread_end, thread_nnz;
-			int thread_start_row, thread_end_row;
-			if(thread_num < change_thread_nnz){
-				thread_start = thread_num * nnz_per_thread + thread_num * 1;
-				thread_end = (thread_num + 1) * nnz_per_thread + (thread_num + 1) * 1 - 1;
+	int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
+	int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
+	int threads_per_block = blockDim.x * blockDim.y * blockDim.z;
+	int thread_num = block_num * threads_per_block + thread_offset;
+	int n_blocks = gridDim.x * gridDim.y * gridDim.z;
+
+	int warp_num = thread_num / THREADS_PER_WARP;
+	int n_warps = n_blocks * threads_per_block / THREADS_PER_WARP;
+	int lane_num = thread_num % THREADS_PER_WARP;
+
+	int warp_start, warp_end, warp_nnz;
+	int warp_start_row, warp_end_row, warp_nrow;
+
+	int nnz_per_warp = csr->nnz / n_warps;
+	int change_warp_nnz = csr->nnz % n_warps;
+
+	// information about row range and non-zeros in this warp
+	if(warp_num < change_warp_nnz){
+		warp_start = warp_num * nnz_per_warp + warp_num * 1;
+		warp_end = (warp_num + 1) * nnz_per_warp + (warp_num + 1) * 1 - 1;
+	}else{
+		warp_start = warp_num * nnz_per_warp + change_warp_nnz * 1;
+		warp_end = (warp_num + 1) * nnz_per_warp + change_warp_nnz * 1 - 1;
+	}
+	warp_nnz = warp_end - warp_start + 1;
+
+	// IF0: this warp has at least one non-zero to deal with 
+	// ELSE0 is empty
+	if(warp_nnz > 0){
+		warp_start_row = func_get_row(warp_start, d_csr);
+		warp_end_row = func_get_row(warp_end, d_csr);
+		warp_nrow = warp_end_row - warp_start_row + 1;
+
+		int n_warp_nnz = csr->nnz / n_warps;
+		int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+		int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+
+		floatType temp_result[THREADS_PER_WARP];
+		temp_result[lane_num] = 0;
+		int valID = warp_num * n_warp_recs + lane_num;
+		int recID = warp_num * n_warp_recs;
+		int threshold = cvr->rec_threshold[warp_num];
+		for(int i = 0; i < (n_warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP; i++, ){
+			int x_addr = cvr->colidx[valID];
+			temp_result[lane_num] += cvr->val[valID] * x[x_offset];
+
+			int rec_pos = cvr->rec[recID].pos;
+			int writeback = cvr->rec[recID].wb;
+			int offset = rec_pos % THREADS_PER_WARP;
+			if(rec_pos < threshold){
+				while(rec_pos / THREADS_PER_WARP == i){
+					if(lane_num == offset){
+						if(rec_pos < threshold){
+							atomicAdd(&y[writeback], temp_result[offset]);
+							temp_result[offset] = 0;
+						}else{
+							writeback = cvr->tail[writeback];
+							if(-1 != writeback){
+								atomicAdd(&y[writeback], temp_result[offset]);
+							}
+							temp_result[offset] = 0;
+						}
+					}
+					recID++;
+					rec_pos = cvr->rec[recID].pos;
+					writeback = cvr->rec[recID].wb;
+					offset = rec_pos % THREADS_PER_WARP;
+				}
 			}else{
-				thread_start = thread_num * nnz_per_thread + change_thread_nnz * 1;
-				thread_end = (thread_num + 1) * nnz_per_thread + change_thread_nnz * 1 - 1;
+				while(rec_pos / THREADS_PER_WARP == i){
+					if(lane_num == offset){
+						writeback = cvr->tail[writeback];
+						if(-1 != writeback){
+							atomicAdd(&y[writeback], temp_result[offset]);
+						}
+						temp_result[offset] = 0;
+					}
+					recID++;
+					rec_pos = cvr->rec[recID].pos;
+					writeback = cvr->rec[recID].wb;
+					offset = rec_pos % THREADS_PER_WARP;
+				}
 			}
-			thread_nnz = thread_end - thread_start + 1;
-			// IF0
-			if(thread_nnz > 0){
-				thread_start_row = func_get_row(thread_start, csr);
-				thread_end_row = func_get_row(thread_end, csr);
+			valID += THREADS_PER_WARP;
+		}
 
-				//store the temporary result of this thread
-				floatType *thread_y = (floatType *)malloc(cvr->nrow * sizeof(floatType));
-				if(NULL == thread_y){
-					printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
-					exit(ERROR);
-				}
-				memset(thread_y, 0, cvr->nrow * sizeof(floatType));
-
-				//store the intermediate result
-				floatType *thread_temp = (floatType *)malloc(n_block_threads * sizeof(floatType));
-				if(NULL == thread_temp){
-					printf("ERROR: *** memory overflow in spmv(), thread_%d ***\n", thread_num);
-					exit(ERROR);
-				}
-				memset(thread_temp, 0, n_block_threads * sizeof(floatType));
-
-				int rec_idx = 0;
-				int offset, writeback;
-				int i, j;
-				//FOR2
-				for(i = 0; i < (thread_nnz + n_block_threads - 1) / n_block_threads; i++){
-					for(j = 0; j < n_block_threads; j++){
-						int x_offset = cvr->colidx_ptr[thread_num][i*n_block_threads+j];
-						thread_temp[j] += cvr->val_ptr[thread_num][i*n_block_threads+j] * x[x_offset];
-					}
-					//corresponding to tracker feeding part
-					if(cvr->rec_ptr[thread_num][rec_idx] < cvr->lrrec_ptr[thread_num]){
-						//more than one temporary result could be processed here
-						while(cvr->rec_ptr[thread_num][rec_idx] / n_block_threads == i){
-							if(cvr->rec_ptr[thread_num][rec_idx] < cvr->lrrec_ptr[thread_num]){
-								offset = cvr->rec_ptr[thread_num][rec_idx++] % n_block_threads;
-								writeback = cvr->rec_ptr[thread_num][rec_idx++];
-								thread_y[writeback] = thread_temp[offset];
-								thread_temp[offset] = 0;
-							}else{ // in case rec[rec_idx] < lrrec < rec[rec_idx+2]
-								offset = cvr->rec_ptr[thread_num][rec_idx++] % n_block_threads;
-								writeback = cvr->rec_ptr[thread_num][rec_idx++];
-								if(-1 != cvr->tail_ptr[thread_num][writeback]){
-									thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
-								}
-								thread_temp[offset] = 0;
-							}
-						}
-					}else{//corresponding to tracker stealing part
-						while(cvr->rec_ptr[thread_num][rec_idx] / n_block_threads == i){
-							offset = cvr->rec_ptr[thread_num][rec_idx++] % n_block_threads;
-							writeback = cvr->rec_ptr[thread_num][rec_idx++];
-							if(-1 != cvr->tail_ptr[thread_num][writeback]){
-								thread_y[cvr->tail_ptr[thread_num][writeback]] += thread_temp[offset];
-							}
-							thread_temp[offset] = 0;
-						}
-					}
-				} //ENDFOR2
-
-				#pragma omp atomic
-				y[thread_start_row] += thread_y[thread_start_row];
-				if(thread_start_row != thread_end_row){
-					#pragma omp atomic
-					y[thread_end_row] += thread_y[thread_end_row];
-				}
-				
-				for(i = thread_start_row + 1; i < thread_end_row; i++){
-					y[i] += thread_y[i];
-				}
-			} //ENDIF0
-
-		} //ENDPRAGMA
+	}// END IF0
 }
 
