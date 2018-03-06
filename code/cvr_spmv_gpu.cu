@@ -70,11 +70,11 @@ typedef struct cvr{
 	int ncol;
 	int nrow;
 	int nnz;
-	floatType *val_ptr;
-	int *colidx_ptr;
-	record_t *rec_ptr;
-	int *lrrec_ptr;
-	int *tail_ptr;
+	floatType *val;
+	int *colidx;
+	record_t *rec;
+	int *rec_threshold;
+	int *tail;
 }cvr_t; // compressed vactorization-oriented sparse row format
 
 
@@ -229,21 +229,27 @@ int main(int argc, char **argv){
 	cvr_t *d_cvr = NULL;
 	//cvr structure is dependent on matrix and runtime configuration
 	int n_blocks = gridDim[0] * gridDim[1] * gridDim[2];
-	int n_block_threads = blockDim[0] * blockDim[1] * blockDim[2];
-	int n_block_nnz = h_csr->nnz / n_blocks;
-	int change_block_nnz = h_csr->nnz % n_blocks;
+	int threads_per_block = blockDim[0] * blockDim[1] * blockDim[2];
+	int n_threads = n_blocks * threads_per_block;
+//	int n_block_nnz = h_csr->nnz / n_blocks;
+//	int change_block_nnz = h_csr->nnz % n_blocks;
+	int n_warps = n_threads / THREADS_PER_WARP;
+	int n_warp_nnz = h_csr->nnz / n_warps;
+//	int change_warp_nnz;
 	// n_block_vals: aligned upperbond of number of values/column indexes per block
 	// +1: blocks before change_block_nnz has n_block_nnz+1 values
-	int n_block_vals = ((n_block_nnz + 1) + n_block_threads - 1) / n_block_threads * n_block_threads;
-	int n_block_recs = n_block_vals + n_block_threads;
+//	int n_block_vals = ((n_block_nnz + 1) + n_block_threads - 1) / n_block_threads * n_block_threads;
+//	int n_block_recs = n_block_vals + n_block_threads;
+	int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+	int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
 
 	//allocate device global memory
 	CHECK(cudaMalloc(&d_cvr, sizeof(cvr_t)));
-	CHECK(cudaMalloc(&d_cvr->val_ptr, n_blocks * n_block_vals * sizeof(floatType)));
-	CHECK(cudaMalloc(&d_cvr->colidx_ptr, n_blocks * n_block_vals * sizeof(int)));
-	CHECK(cudaMalloc(&d_cvr->rec_ptr, n_blocks * n_block_recs * sizeof(record_t)));
-	CHECK(cudaMalloc(&d_cvr->lrrec_ptr, n_blocks * sizeof(int)));
-	CHECK(cudaMalloc(&d_cvr->tail_ptr, n_blocks * n_block_threads * sizeof(int)));
+	CHECK(cudaMalloc(&d_cvr->val, n_warps * n_warp_vals * sizeof(floatType)));
+	CHECK(cudaMalloc(&d_cvr->colidx, n_warps * n_warp_vals * sizeof(int)));
+	CHECK(cudaMalloc(&d_cvr->rec, n_warps * n_warp_recs * sizeof(record_t)));
+	CHECK(cudaMalloc(&d_cvr->rec_threshold, n_warps * sizeof(int)));
+	CHECK(cudaMalloc(&d_cvr->tail, n_threads * sizeof(int)));
 
 	//initialize
 	CHECK(cudaMemcpy(d_cvr, h_csr, 3 * sizeof(int), cudaMemcpyHostToDevice));
@@ -287,13 +293,13 @@ int main(int argc, char **argv){
 //	CHECK(cudaMalloc(&thread_valID, n_block_threads * sizeof(int)));
 //	CHECK(cudaMalloc(&thread_count, n_block_threads * sizeof(int)));
 	// PREPROCESS
-	if(preprocess(d_cvr, d_csr, thread_rowID, thread_valID, thread_count)){
+	if(preprocess(d_cvr, d_csr)){
 		printf("ERROR occured in function preprocess()\n");
 		return ERROR;
 	}
 	
 	// SPMV KERNEL
-	if(spmv(d_y, d_x, d_cvr, d_csr, h_csr)){
+	if(spmv(d_y, d_x, d_cvr)){
 		printf("ERROR occured in function spmv()\n");
 		return ERROR;
 	}
@@ -321,17 +327,17 @@ int main(int argc, char **argv){
 	CHECK(cudaFree(d_x));
 	CHECK(cudaFree(d_y));
 
-	CHECK(cudaFree(&d_cvr->val_ptr));
-	CHECK(cudaFree(&d_cvr->colidx_ptr));
-	CHECK(cudaFree(&d_cvr->rec_ptr));
-	CHECK(cudaFree(&d_cvr->lrrec_ptr));
-	CHECK(cudaFree(&d_cvr->tail_ptr));	
-	CHECK(cudaFree(&d_cvr));
+	CHECK(cudaFree(d_cvr->val));
+	CHECK(cudaFree(d_cvr->colidx));
+	CHECK(cudaFree(d_cvr->rec));
+	CHECK(cudaFree(d_cvr->rec_threshold));
+	CHECK(cudaFree(d_cvr->tail));	
+	CHECK(cudaFree(d_cvr));
 
-	CHECK(cudaFree(&d_csr->val));
-	CHECK(cudaFree(&d_csr->col_idx));
-	CHECK(cudaFree(&d_csr->row_ptr));
-	CHECK(cudaFree(&d_csr));
+	CHECK(cudaFree(d_csr->val));
+	CHECK(cudaFree(d_csr->col_idx));
+	CHECK(cudaFree(d_csr->row_ptr));
+	CHECK(cudaFree(d_csr));
 
 	/****  \free device memory  ****/
 
@@ -570,7 +576,7 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr){
 	dim3 grid(gridDim[0], gridDim[1], gridDim[2]);
 	dim3 block(blockDim[0], blockDim[1], blockDim[2]);
 
-	preprocess_kernel<<<grid, block>>>(d_cvr, d_csr);
+	preprocess_kernel<<<grid, block, 3*n_warps*sizeof(uint32_t)>>>(d_cvr, d_csr);
 	CHECK(cudaGetLastError());
 	cudaDeviceSynchronize();
 
@@ -604,6 +610,7 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, csr_t *h_cs
 
 
 __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
+	extern __shared__ uint32_t var_ptr[];
 	// general case
 	/* 
 	** Basic information of block and thread:
@@ -612,206 +619,355 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 	**   threads_per_block: number of threads in a block
 	**   thread_num:        current thread id in global vision
 	**   n_blocks:          number of blocks in this grid
+	**   warp_num:          current warp id in global vision
+	**   n_warps:           number of warps in this grid
+	**   lane_num:          current thread id in this warp
 	*/
 	int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
 	int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
 	int threads_per_block = blockDim.x * blockDim.y * blockDim.z;
 	int thread_num = block_num * threads_per_block + thread_offset;
-	int n_blocks = blockDim[0] * blockDim[1] * blockDim[2];
+	int n_blocks = gridDim.x * gridDim.y * gridDim.z;
 
 	// 1-dimension case
 	//int block_num = blockIdx.x;
 	//int thread_offset = threadIdx.x;
 	//int threads_per_block = blockDim.x;
 	//int thread_num = block_num * threads_per_block + thread_offset;
+	//int n_blocks = gridDim.x;
+
+	int warp_num = thread_num / THREADS_PER_WARP;
+	int n_warps = n_blocks * threads_per_block / THREADS_PER_WARP;
+	int lane_num = thread_num % THREADS_PER_WARP;
 
 	/*
-	** Information of non-zeros in a block
-	**   block_start/block_end:         first/last non-zero's id in this block
-	**   block_nnz:                     number of non-zeros in this block
-	**   block_start_row/block_end_row: first/last non-zero's row id in this block
-	**   block_nrow:                    number of rows of non-zeros in this block
-	**   nnz_per_block:                 average number of non-zeros in a block
-	**   change_block_nnz:              first n blocks have one more non-zeros than others, n=change_block_nnz
+	** Information of non-zeros in a warp
+	**   warp_start/warp_end:         first/last non-zero's id in this warp
+	**   warp_nnz:                     number of non-zeros in this warp
+	**   warp_start_row/warp_end_row: first/last non-zero's row id in this warp
+	**   warp_nrow:                    number of rows of non-zeros in this warp
+	**   nnz_per_warp:                 average number of non-zeros in a warp
+	**   change_warp_nnz:              first n warps have one more non-zeros than others, n=change_warp_nnz
 	*/
-	int block_start, block_end, block_nnz;
-	int block_start_row, block_end_row, block_nrow;
+	int warp_start, warp_end, warp_nnz;
+	int warp_start_row, warp_end_row, warp_nrow;
 
-	int nnz_per_block = csr->nnz / n_blocks;
-	int change_block_nnz = csr->nnz % n_blocks;
+	int nnz_per_warp = csr->nnz / n_warps;
+	int change_warp_nnz = csr->nnz % n_warps;
 
-	// information about row range and non-zeros in this block
-	if(block_num < change_block_nnz){
-		block_start = block_num * nnz_per_block + block_num * 1;
-		block_end = (block_num + 1) * nnz_per_block + (block_num + 1) * 1 - 1;
+	// information about row range and non-zeros in this warp
+	if(warp_num < change_warp_nnz){
+		warp_start = warp_num * nnz_per_warp + warp_num * 1;
+		warp_end = (warp_num + 1) * nnz_per_warp + (warp_num + 1) * 1 - 1;
 	}else{
-		block_start = block_num * nnz_per_block + change_block_nnz * 1;
-		block_end = (block_num + 1) * nnz_per_block + change_block_nnz * 1 - 1;
+		warp_start = warp_num * nnz_per_warp + change_warp_nnz * 1;
+		warp_end = (warp_num + 1) * nnz_per_warp + change_warp_nnz * 1 - 1;
 	}
-	block_nnz = block_end - block_start + 1;
+	warp_nnz = warp_end - warp_start + 1;
 
-	// IF0: this block has at least one non-zero to deal with 
+	// IF0: this warp has at least one non-zero to deal with 
 	// ELSE0 is empty
-	if(block_nnz > 0){
-		block_start_row = func_get_row(block_start, d_csr);
-		block_end_row = func_get_row(block_end, d_csr);
-		block_nrow = block_end_row - block_start_row + 1;
+	if(warp_nnz > 0){
+		warp_start_row = func_get_row(warp_start, d_csr);
+		warp_end_row = func_get_row(warp_end, d_csr);
+		warp_nrow = warp_end_row - warp_start_row + 1;
 
 		/*
-		**   block_n_vals: number of values needed to store, must be less than n_block_vals in main()
-		**   block_n_recs: number of records needed to store, must be less than n_block_recs in main()
+		**   n_warp_nnz: average number of non-zeros in a warp
+		**   n_warp_vals: upperbond of number of values needed to store, related to memory space allocation
+		**   n_warp_recs: upperbond of number of records needed to store, related to memory space allocation
+		**   warp_n_vals: number of values needed to store, must be less than n_warp_vals
+		**   warp_n_recs: number of records needed to store, must be less than n_warp_recs
 		*/
-		int block_n_vals = (block_nnz + threads_per_block - 1) / threads_per_block * threads_per_block;
-		int block_n_recs = (block_nrow + threads_per_block * 2 - 1) / threads_per_block * threads_per_block;
+		int n_warp_nnz = csr->nnz / n_warps;
+		int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+		int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+//		int warp_n_vals = (warp_nnz + threads_per_warp - 1) / threads_per_warp * threads_per_warp;
+//		int warp_n_recs = (warp_nrow + threads_per_warp * 2 - 1) / threads_per_warp * threads_per_warp;
 
 		/*
 		** Trackers
 		**   valID: id of non-zero that is preprocessing by current thread
 		**   rowID: row id of non-zero that is preprocessing by current thread
 		**   count: number of non-zeros haven't been preprocessed in this row
+		**   recID: record id
 		**   cur_row: row id of this row, used to traverse rows in the matrix
+		**   cur_rec: current record id
+		**   gather_base: calculate store address by gather_base + offset
 		*/
-		int valID, rowID, count;
-		__shared__ int cur_row = block_start_row;
+		int valID, rowID, count, recID, warp_gather_base;
+		__shared__ uint32_t *cur_row, *cur_rec, *cur_base;
+		// initialize
+		if(0 == thread_num){
+			cur_row = var_ptr;
+			cur_rec = var_ptr + n_warps * sizeof(uint32_t);
+			cur_base = var_ptr + 2 * n_warps * sizeof(uint32_t);
+		}
+		__syncthreads();
+
+		if(0 == warp_num){
+			cur_row[warp_num] = warp_start_row;
+			cur_rec[warp_num] = warp_num * n_warp_recs;
+			cur_base[warp_num] = warp_num * n_warp_vals;
+			cvr->rec_threshold[warp_num] = -1;
+		}
+		__syncthreads();
 
 		// initialize valID, rowID, count for preprocessing
-		rowID = cur_row + thread_offset;
-		if(rowID > block_end_row){
+		rowID = atomicAdd(&cur_row[warp_num], 1);
+		// empty rows
+		while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
+			rowID = atomicAdd(&cur_row[warp_num], 1);
+		}
+
+		if(rowID > warp_end_row){
 			rowID = -1;
 			valID = -1;
 			count = 0;
 		}else{
 			valID = csr->row_ptr[rowID];
-			count = csr->row_ptr[rowID+1] - csr->row_ptr[rowID];
-			if(rowID == block_start_row){
-				valID = block_start;
-				count = csr->row_ptr[rowID+1] - block_start;
+			count = csr->row_ptr[rowID+1] - valID;
+			if(rowID == warp_start_row){
+				count = count + valID - warp_start;
+				valID = warp_start;
 			}
 			if(rowID == thread_end_row){
-				count = block_end + 1 - valID;
+				count = warp_end + 1 - valID;
 			}
-			valID -= block_start;
+//			valID -= warp_start;
 		}
-		if(thread_num == 0){
-			cur_row += threads_per_block;
-		}
-		__syncthreads();
 
-		//IF1: if the number of rows is less than threads_per_block, initialize tail_ptr
-		if(cur_row > block_end_row){
-			cvr->tail_ptr[thread_num] = rowID;
+		// IF1: if the number of rows is less than THREADS_PER_WARP, initialize tail_ptr
+		if(cur_row[warp_num] > warp_end_row){
+			cvr->tail[thread_num] = rowID;
 			if(rowID != -1){
 				rowID = thread_num;
 			}
-		}
+		} // END IF1
+
+		// FOR1: preprocessing loop
+		for(int i = 0; i <= warp_n_vals / THREADS_PER_WARP; i++){
+			__shared__ uint32_t count_and;
+			if(0 == lane_num){
+				count_and = 1;
+			}
+			atomicAnd(&count_and, count);
+			// IF2: if recording and feeding/stealing is needed
+			if(0 == count_and){
+				if(0 == count){
+					// IF3: recording
+					if(-1 != rowID){
+						recID = atomicAdd(&cur_rec[warp_num], 1);
+						cvr->rec[recID].pos = (i - 1) * THREADS_PER_WARP + lane_num;
+						cvr->rec[recID].wb = rowID;
+					}// END IF3
+
+					// empty rows
+					rowID = atomicAdd(&cur_row[warp_num]);
+					while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
+						rowID = atomicAdd(&cur_row, 1);
+					}
+				}
+
+				// IF4: tracker feeding
+				// I'M NOT VERY SURE ABOUT THIS <= 
+				if(cur_row[warp_num] <= warp_end_row+THREADS_PER_WARP){
+					if(0 == count){
+						valID = csr->row_ptr[rowID];
+						count = csr->row_ptr[rowID+1] - valID;
+						// IF5 & ELSE1
+						if(cur_row[warp_num] > warp_end_row){
+							cvr->tail_ptr[thread_num] = rowID;
+							rowID = warp_num;
+							// make sure once IF5 is executed, IF4 will never be executed 
+							atomicAdd(&cur_row[warp_num], THREADS_PER_WARP);
+						}
+					}
+				}else{ // ELSE4: tracker stealing
+					// IF6: set rec_threshold, only executed once
+					if(-1 == cvr->rec_threshold[warp_num]){
+						__shared__ int temp_rec_threshold;
+						switch(lane_num){
+							case 31: temp_rec_threshold = 31;
+							case 30: temp_rec_threshold = 30;
+							case 29: temp_rec_threshold = 29;
+							case 28: temp_rec_threshold = 28;
+							case 27: temp_rec_threshold = 27;
+							case 26: temp_rec_threshold = 26;
+							case 25: temp_rec_threshold = 25;
+							case 24: temp_rec_threshold = 24;
+							case 23: temp_rec_threshold = 23;
+							case 22: temp_rec_threshold = 22;
+							case 21: temp_rec_threshold = 21;
+							case 20: temp_rec_threshold = 20;
+							case 19: temp_rec_threshold = 19;
+							case 18: temp_rec_threshold = 18;
+							case 17: temp_rec_threshold = 17;
+							case 16: temp_rec_threshold = 16;
+							case 15: temp_rec_threshold = 15;
+							case 14: temp_rec_threshold = 14;
+							case 13: temp_rec_threshold = 13;
+							case 12: temp_rec_threshold = 12;
+							case 11: temp_rec_threshold = 11;
+							case 10: temp_rec_threshold = 10;
+							case  9: temp_rec_threshold =  9;
+							case  8: temp_rec_threshold =  8;
+							case  7: temp_rec_threshold =  7;
+							case  6: temp_rec_threshold =  6;
+							case  5: temp_rec_threshold =  5;
+							case  4: temp_rec_threshold =  4;
+							case  3: temp_rec_threshold =  3;
+							case  2: temp_rec_threshold =  2;
+							case  1: temp_rec_threshold =  1;
+							case  0: temp_rec_threshold =  0;
+						}
+						if(0 == lane_num){
+							temp_rec_threshold += (i - 1) * THREADS_PER_WARP;
+							cvr->rec_threshold_ptr[warp_num] = temp_rec_threshold < 0 ? 0 : temp_rec_threshold;
+						}
+					}// END IF6
+
+					__shared__ int average;
+					if(0 == lane_num){
+						average = 0;
+					}
+					atomicAdd(&average, count);
+					if(0 == lane_num){
+						average = (average + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+					}
+
+					if(0 == average){
+						if(i != warp_n_vals / THREADS_PER_WARP){
+							printf("ERROR: *** last round of preprocessing is incorrect ***\n");
+							exit(ERROR);
+						}
+						continue;
+					}else{
+						__shared__ int candidate;
+						if(0 == lane_num){
+							candidate = -1;
+						}
+						if(count > average){
+							switch(lane_num){
+								case 31: candidate = 31;
+								case 30: candidate = 30;
+								case 29: candidate = 29;
+								case 28: candidate = 28;
+								case 27: candidate = 27;
+								case 26: candidate = 26;
+								case 25: candidate = 25;
+								case 24: candidate = 24;
+								case 23: candidate = 23;
+								case 22: candidate = 22;
+								case 21: candidate = 21;
+								case 20: candidate = 20;
+								case 19: candidate = 19;
+								case 18: candidate = 18;
+								case 17: candidate = 17;
+								case 16: candidate = 16;
+								case 15: candidate = 15;
+								case 14: candidate = 14;
+								case 13: candidate = 13;
+								case 12: candidate = 12;
+								case 11: candidate = 11;
+								case 10: candidate = 10;
+								case  9: candidate =  9;
+								case  8: candidate =  8;
+								case  7: candidate =  7;
+								case  6: candidate =  6;
+								case  5: candidate =  5;
+								case  4: candidate =  4;
+								case  3: candidate =  3;
+								case  2: candidate =  2;
+								case  1: candidate =  1;
+								case  0: candidate =  0;
+							}
+						}
+
+						__shared__ int selected;
+						if(0 == count){
+							switch(lane_num){
+								case 31: selected = 31;
+								case 30: selected = 30;
+								case 29: selected = 29;
+								case 28: selected = 28;
+								case 27: selected = 27;
+								case 26: selected = 26;
+								case 25: selected = 25;
+								case 24: selected = 24;
+								case 23: selected = 23;
+								case 22: selected = 22;
+								case 21: selected = 21;
+								case 20: selected = 20;
+								case 19: selected = 19;
+								case 18: selected = 18;
+								case 17: selected = 17;
+								case 16: selected = 16;
+								case 15: selected = 15;
+								case 14: selected = 14;
+								case 13: selected = 13;
+								case 12: selected = 12;
+								case 11: selected = 11;
+								case 10: selected = 10;
+								case  9: selected =  9;
+								case  8: selected =  8;
+								case  7: selected =  7;
+								case  6: selected =  6;
+								case  5: selected =  5;
+								case  4: selected =  4;
+								case  3: selected =  3;
+								case  2: selected =  2;
+								case  1: selected =  1;
+								case  0: selected =  0;
+							}
+						}
+
+						if(-1 == candidate){
+							if(selected == lane_num){
+								valID = -1;
+								count = 1;
+							}
+						}else{
+							if(selected == lane_num){
+								rowID = candidate;
+								valID = __shfl(valID, candidate);
+								count = average;
+							}
+							if(candidate == lane_num){
+								rowID = candidate;
+								valID = valID + average;
+								count = count - average;
+							}
+						}
+						
+
+					} // END IF4
+				}
+			} // END IF2
+
+			// warp_gather_base: base address for current warp to store
+			if(0 == lane_num){
+				warp_gather_base = atomicAdd(&gather_base, THREADS_PER_WARP);
+			}
+			
+			int addr = warp_gather_base + lane_num;
+			if(-1 == valID){
+				cvr->val[addr] = 0;
+				cvr->colidx[addr] = 0;
+			}else{
+				cvr->val[addr] = csr->val[valID];
+				cvr->colidx[addr] = csr->col_idx[valID];
+			}
+			valID++;
+			count--;
+			
+		} // END FOR1
+
 	} // END IF0
 
-
-/****************** I am the beautiful split line ******************/
-/*
-TODO 1: there's one thing remained above: how to deal with rs??
-TODO 2: change floatType type
-
-*/
-
-		// IF0: if this thread has at least one number to deal with
-		if(thread_nnz > 0){
-			int rec_idx = 0, gather_base = 0;
-			cvr->lrrec_ptr[thread_num] = -1;
-			// FOR1
-			for(i = 0; i <= thread_n_vals / n_block_threads; i++){
-				// IF2: if some lanes are empty
-				if(0 == func_AND(thread_count, n_block_threads)){
-					// FOR2: iterate over all lanes, feed or steal
-					for(j = 0; j < n_block_threads; j++){
-						// IF3: lane[j] is empty
-						if(0 == thread_count[j]){
-							//EQUAL is included because thread_end_row can be reached
-							while(thread_rs <= thread_end_row && csr->row_ptr[thread_rs+1] == csr->row_ptr[thread_rs]){
-								thread_rs++;
-							}
-
-							//recording
-							if(-1 != thread_rowID[j]){
-								cvr->rec_ptr[thread_num][rec_idx++] = (i - 1) * n_block_threads + j; //valID which triggers write back
-								cvr->rec_ptr[thread_num][rec_idx++] = thread_rowID[j]; //write back position
-							}
-
-							//IF4: tracker feeding
-							//if next non-empty line exsits, non-empty is guaranteed by previous while loop
-							if(thread_rs <= thread_end_row){
-								thread_rowID[j] = thread_rs;
-								thread_valID[j] = csr->row_ptr[thread_rs] - thread_start;
-								thread_count[j] = csr->row_ptr[thread_rs+1] - csr->row_ptr[thread_rs];
-								//ELSE1: if the number of rows is more than n_block_threads, initialize tail_ptr
-								//the lane deals thread_end_row must reaches here
-								if(thread_rs == thread_end_row){
-									thread_count[j] = thread_end + 1 - thread_valID[j] - thread_start;
-									for(k = 0; k < n_block_threads; k++){
-										cvr->tail_ptr[thread_num][k] = thread_rowID[k];
-										thread_rowID[k] = k;
-									}
-								}
-								thread_rs++;
-
-							}else{ //ELSE4: tracker stealing, thread_rs is not important since then
-								if(-1 == cvr->lrrec_ptr[thread_num]){
-									int temp_lrrec = (i - 1) * n_block_threads + j;
-									cvr->lrrec_ptr[thread_num] = temp_lrrec < 0 ? 0 : temp_lrrec;
-								}
-
-								int average = func_average(thread_count, n_block_threads);
-								//if no remainding numbers exist
-								if(0 == average){
-									if(i != thread_n_vals / n_block_threads){
-										printf("ERROR: *** last round of preprocessing is incorrect ***\n");
-										exit(ERROR);
-									}
-									continue;
-								}else{
-									int candidate = 0;
-									//get candidate to steal
-									for( ; candidate < n_block_threads; candidate++){
-										if(thread_count[candidate] > average){
-											break;
-										}
-									}
-									//if padding is needed
-									if(candidate == n_block_threads){
-										thread_valID[j] = -1;
-										thread_count[j] = 1;
-									}else{
-										thread_rowID[j] = candidate;
-										thread_valID[j] = thread_valID[candidate];
-										thread_count[j] = average;
-										thread_rowID[candidate] = candidate;
-										thread_valID[candidate] = thread_valID[candidate] + average;
-										thread_count[candidate] = thread_count[candidate] - average;
-									}
-								}
-							} //ENDIF4
-						} //ENDIF3
-					} //ENDFOR2
-				} //ENDIF2
-
-				//continue converting
-				for(j = 0; j < n_block_threads && i < thread_n_vals / n_block_threads; j++){
-					//if padding exists
-					if(-1 == thread_valID[j]){
-						cvr->val_ptr[thread_num][j+gather_base] = 0;
-						cvr->colidx_ptr[thread_num][j+gather_base] = cvr->colidx_ptr[thread_num][j+gather_base-1];
-					}else{
-						cvr->val_ptr[thread_num][j+gather_base] = csr->val[thread_valID[j]+thread_start];
-						cvr->colidx_ptr[thread_num][j+gather_base] = csr->col_idx[thread_valID[j]+thread_start];
-					}
-					thread_valID[j]++;
-					thread_count[j]--;
-				}
-				gather_base += n_block_threads;
-			} //ENDFOR1
-		} //ENDIF0
-
 }
+
+//---------------------------------------------------------------------------------------
 
 __global__ void spmv_kernel(){
 	#pragma omp parallel num_threads(n_blocks)
