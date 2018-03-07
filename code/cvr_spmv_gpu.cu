@@ -566,7 +566,7 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr){
 	dim3 grid(gridDim[0], gridDim[1], gridDim[2]);
 	dim3 block(blockDim[0], blockDim[1], blockDim[2]);
 
-	preprocess_kernel<<<grid, block, 3*n_warps*sizeof(uint32_t)>>>(d_cvr, d_csr);
+	preprocess_kernel<<<grid, block, 3*n_warps*sizeof(int)>>>(d_cvr, d_csr);
 	CHECK(cudaGetLastError());
 	cudaDeviceSynchronize();
 
@@ -606,7 +606,7 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr){
 
 
 __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
-	extern __shared__ uint32_t var_ptr[];
+	extern __shared__ int var_ptr[];
 	// general case
 	/* 
 	** Basic information of block and thread:
@@ -690,14 +690,16 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 		**   cur_row: row id of this row, used to traverse rows in the matrix
 		**   cur_rec: current record id
 		**   gather_base: calculate store address by gather_base + offset
+
+		
 		*/
 		int valID, rowID, count, recID, warp_gather_base;
-		__shared__ uint32_t *cur_row, *cur_rec, *cur_base;
+		__shared__ int *cur_row, *cur_rec, *cur_base;
 		// initialize
 		if(0 == thread_num){
 			cur_row = var_ptr;
-			cur_rec = var_ptr + n_warps * sizeof(uint32_t);
-			cur_base = var_ptr + 2 * n_warps * sizeof(uint32_t);
+			cur_rec = var_ptr + n_warps * sizeof(int);
+			cur_base = var_ptr + 2 * n_warps * sizeof(int);
 		}
 		__syncthreads();
 
@@ -743,7 +745,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 
 		// FOR1: preprocessing loop
 		for(int i = 0; i <= warp_n_vals / THREADS_PER_WARP; i++){
-			__shared__ uint32_t count_and;
+			__shared__ int count_and;
 			if(0 == lane_num){
 				count_and = 1;
 			}
@@ -1054,4 +1056,6 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
 
 	}// END IF0
 }
+
+
 
