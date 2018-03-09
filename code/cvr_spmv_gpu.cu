@@ -20,7 +20,9 @@
 #define THREADS_PER_WARP 32
 
 #define floatType float
-
+// if you change float to double
+//    (1)%f in read_matrix() and verify answer in main() should be changed to %lf
+//    (2)and atomicAdd in spmv_kernel() will be changed 
 
 #define CHECK(call){\
 	const cudaError_t error = call;\
@@ -123,7 +125,8 @@ inline void func_initialData(floatType *ip, int size){
 	time_t t;
 	srand((unsigned)time(&t));
 	for(int i = 0; i < size; i++)	{
-		ip[i] = (floatType)(rand() & 0xff) / 10.0f;
+//		ip[i] = (floatType)(rand() & 0xff) / 10.0f;
+        ip[i] = i % 10;
 	}
 }
 
@@ -321,16 +324,16 @@ int main(int argc, char **argv){
 	CHECK(cudaFree(d_x));
 	CHECK(cudaFree(d_y));
 
-	CHECK(cudaFree(d_cvr->val));
-	CHECK(cudaFree(d_cvr->colidx));
-	CHECK(cudaFree(d_cvr->rec));
-	CHECK(cudaFree(d_cvr->rec_threshold));
-	CHECK(cudaFree(d_cvr->tail));	
+	CHECK(cudaFree(temp_cvr.val));
+	CHECK(cudaFree(temp_cvr.colidx));
+	CHECK(cudaFree(temp_cvr.rec));
+	CHECK(cudaFree(temp_cvr.rec_threshold));
+	CHECK(cudaFree(temp_cvr.tail));	
 	CHECK(cudaFree(d_cvr));
 
-	CHECK(cudaFree(d_csr->val));
-	CHECK(cudaFree(d_csr->col_idx));
-	CHECK(cudaFree(d_csr->row_ptr));
+	CHECK(cudaFree(temp_csr.val));
+	CHECK(cudaFree(temp_csr.col_idx));
+	CHECK(cudaFree(temp_csr.row_ptr));
 	CHECK(cudaFree(d_csr));
 
 	/****  \free device memory  ****/
@@ -341,7 +344,7 @@ int main(int argc, char **argv){
 //	gettimeofday(&tv1, NULL);
 
 	for(int iteration = 0; iteration < n_iterations; iteration++){
-		#pragma omp parallel for num_threads(omp_get_num_threads())
+//		#pragma omp parallel for num_threads(omp_get_num_threads())
 		floatType sum;
 		for(int i = 0; i < h_csr->nrow; i++){
 			sum = 0;
@@ -349,6 +352,7 @@ int main(int argc, char **argv){
 				sum += h_csr->val[j] * h_x[h_csr->col_idx[j]];
 			}
 			y_verify[i] += sum;
+            printf("y[%d]=%f, y_v[%d]=%f\n", i, h_y[i], i, y_verify[i]);
 		}
 	}
 
@@ -365,7 +369,7 @@ int main(int argc, char **argv){
 	for(int i = 0; i < h_csr->nrow; i++){
 		if(func_compare(h_y[i], y_verify[i]) != CMP_EQUAL){
 			count++;
-			printf("y[%d] should be %lf, but the result is %lf\n", i, y_verify[i], h_y[i]);	
+			printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], h_y[i]);	
 		}
 		if(count > 10){
 			break;
@@ -481,7 +485,7 @@ int read_matrix(csr_t *csr, char *filename){
 			floatType im;
 			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %lf %lf", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
+				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
 				if(coo.triple[i].x != coo.triple[i].y){
 					coo.triple[i+1].x = coo.triple[i].y;
 					coo.triple[i+1].y = coo.triple[i].x;
@@ -492,7 +496,7 @@ int read_matrix(csr_t *csr, char *filename){
 		}else{
 			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %lf", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
+				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
 				if(coo.triple[i].x != coo.triple[i].y){
 					coo.triple[i+1].x = coo.triple[i].y;
 					coo.triple[i+1].y = coo.triple[i].x;
@@ -512,12 +516,12 @@ int read_matrix(csr_t *csr, char *filename){
 			floatType im;
 			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %lf %lf", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
+				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
 			}
 		}else{
 			for(i = 0; i < coo.nnz; i++){
 				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %lf", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
+				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
 			}
 		}
 	}
@@ -577,12 +581,12 @@ int read_matrix(csr_t *csr, char *filename){
 **     csr_t *d_csr       initialized csr_t pointer(device)
 */
 int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps){
-	printf("\nPreprocess start.\n");
+	printf("Preprocess start.\n");
 
 	dim3 grid(griddim[0], griddim[1], griddim[2]);
 	dim3 block(blockdim[0], blockdim[1], blockdim[2]);
 
-	preprocess_kernel<<<grid, block, 3*n_warps*sizeof(int)>>>(d_cvr, d_csr);
+	preprocess_kernel<<<grid, block, 2*n_warps*sizeof(int)>>>(d_cvr, d_csr);
 	CHECK(cudaGetLastError());
 	cudaDeviceSynchronize();
 
@@ -601,7 +605,7 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps){
 **     cvr_t *d_cvr       allocated cvr_t pointer(device)
 */
 int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr){
-	printf("\nSparse Matrix-Vector multiply start.\n");
+	printf("Sparse Matrix-Vector multiply start.\n");
 
 	dim3 grid(griddim[0], griddim[1], griddim[2]);
 	dim3 block(blockdim[0], blockdim[1], blockdim[2]);
@@ -705,20 +709,18 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 
 		
 		*/
-		int valID, rowID, count, recID, warp_gather_base;
-		__shared__ int *cur_row, *cur_rec, *cur_base;
+		int valID, rowID, count, recID, warp_gather_base = warp_num * n_warp_vals;
+		__shared__ int *cur_row, *cur_rec;
 		// initialize
 		if(0 == thread_num){
 			cur_row = var_ptr;
 			cur_rec = &var_ptr[n_warps];
-			cur_base = &var_ptr[2*n_warps];
 		}
 		__syncthreads();
 
 		if(0 == lane_num){
 			cur_row[warp_num] = warp_start_row;
 			cur_rec[warp_num] = warp_num * n_warp_recs;
-			cur_base[warp_num] = warp_num * n_warp_vals;
 			cvr->rec_threshold[warp_num] = -1;
 		}
 //		__syncthreads();
@@ -955,11 +957,6 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 				}
 			} // END IF2
 
-			// warp_gather_base: base address for current warp to store
-			if(0 == lane_num){
-				warp_gather_base = atomicAdd(&cur_base[warp_num], THREADS_PER_WARP);
-			}
-			
 			int addr = warp_gather_base + lane_num;
 			if(-1 == valID){
 				cvr->val[addr] = 0;
@@ -970,6 +967,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 			}
 			valID++;
 			count--;
+            warp_gather_base += THREADS_PER_WARP;
 			
 		} // END FOR1
 
@@ -1060,6 +1058,9 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
 						temp_result[offset] = 0;
 					}
 					recID++;
+                    if(recID >= (warp_num + 1) * n_warp_recs){
+                        break;
+                    }
 					rec_pos = cvr->rec[recID].pos;
 					writeback = cvr->rec[recID].wb;
 					offset = rec_pos % THREADS_PER_WARP;
@@ -1070,5 +1071,15 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
 
 	}// END IF0
 }
+
+
+/*
+Possible optimizing method:
+1. update y by (1)another kernel (2)shared memory (3)shared memory and nested kernel
+2. 
+
+*/
+
+
 
 
