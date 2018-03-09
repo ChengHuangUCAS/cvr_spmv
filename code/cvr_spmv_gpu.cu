@@ -227,7 +227,7 @@ int main(int argc, char **argv){
 	**  threads_per_block: number of threads in a block
 	**  n_threads: total number of threads in this grid
 	**  n_warps: total number of warps in this grid
-	**  n_warp_nnz: average number of non-zeros dealed by one warp
+	**  n_warp_nnz: average[warp_num] number of non-zeros dealed by one warp
 	**  n_warp_vals: upper bond of number of non-zeros dealed by one warp, aligned
 	**  n_warp_recs: upper bond of records needed by one warp, aligned
 	*/
@@ -586,7 +586,7 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps){
 	dim3 grid(griddim[0], griddim[1], griddim[2]);
 	dim3 block(blockdim[0], blockdim[1], blockdim[2]);
 
-	preprocess_kernel<<<grid, block, 2*n_warps*sizeof(int)>>>(d_cvr, d_csr);
+	preprocess_kernel<<<grid, block, 7*n_warps*sizeof(int)>>>(d_cvr, d_csr);
 	CHECK(cudaGetLastError());
 	cudaDeviceSynchronize();
 
@@ -618,7 +618,7 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr){
 		cudaDeviceSynchronize();
 	} //ENDFOR1: iteration
 
-	printf("OK\n");
+	printf("OK!\n");
 
 	return OK;
 }
@@ -661,7 +661,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 	**   warp_start/warp_end:         first/last non-zero's id in this warp
 	**   warp_nnz:                     number of non-zeros in this warp
 	**   warp_start_row/warp_end_row: first/last non-zero's row id in this warp
-	**   nnz_per_warp:                 average number of non-zeros in a warp
+	**   nnz_per_warp:                 average[warp_num] number of non-zeros in a warp
 	**   change_warp_nnz:              first n warps have one more non-zeros than others, n=change_warp_nnz
 	*/
 	int warp_start, warp_end, warp_nnz;
@@ -687,7 +687,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 		warp_end_row = func_get_row(warp_end, csr);
 
 		/*
-		**   n_warp_nnz: average number of non-zeros in a warp
+		**   n_warp_nnz: average[warp_num] number of non-zeros in a warp
 		**   n_warp_vals: upperbond of number of values needed to store, related to memory space allocation
 		**   n_warp_recs: upperbond of number of records needed to store, related to memory space allocation
 		**   warp_n_vals: number of values needed to store, must be less than n_warp_vals
@@ -710,17 +710,26 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 		
 		*/
 		int valID, rowID, count, recID, warp_gather_base = warp_num * n_warp_vals;
-		__shared__ int *cur_row, *cur_rec;
+		__shared__ int *cur_row, *cur_rec, *count_and, *average, *temp_rec_threshold, *candidate, *selected;
 		// initialize
 		if(0 == thread_num){
 			cur_row = var_ptr;
 			cur_rec = &var_ptr[n_warps];
+            count_and = &var_ptr[2*n_warps];
+            average = &var_ptr[3*n_warps];
+            temp_rec_threshold = &var_ptr[4*n_warps];
+            candidate = &var_ptr[5*n_warps];
+            selected = &var_ptr[6*n_warps];
 		}
 		__syncthreads();
 
 		if(0 == lane_num){
 			cur_row[warp_num] = warp_start_row;
 			cur_rec[warp_num] = warp_num * n_warp_recs;
+            count_and[warp_num] = 1;
+            average[warp_num] = 0;
+            candidate[warp_num] = -1;
+            selected[warp_num] = -1;
 			cvr->rec_threshold[warp_num] = -1;
 		}
 //		__syncthreads();
@@ -759,13 +768,12 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 
 		// FOR1: preprocessing loop
 		for(int i = 0; i <= n_warp_vals / THREADS_PER_WARP; i++){
-			__shared__ int count_and;
 			if(0 == lane_num){
-				count_and = 1;
+				count_and[warp_num] = 1;
 			}
-			atomicAnd(&count_and, count);
+			atomicAnd(&count_and[warp_num], count);
 			// IF2: if recording and feeding/stealing is needed
-			if(0 == count_and){
+			if(0 == count_and[warp_num]){
 				if(0 == count){
 					// IF3: recording
 					if(-1 != rowID){
@@ -781,9 +789,11 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 					}
 				}
 
+                // WHILE1: feeding/stealing one by one
+                while(0 == count_and[warp_num]){
+
 				// IF4: tracker feeding
-				// I'M NOT VERY SURE ABOUT THIS <= 
-				if(cur_row[warp_num] <= warp_end_row+THREADS_PER_WARP){
+				if(cur_row[warp_num] <= warp_end_row){
 					if(0 == count){
 						valID = csr->row_ptr[rowID];
 						count = csr->row_ptr[rowID+1] - valID;
@@ -798,164 +808,173 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 				}else{ // ELSE4: tracker stealing
 					// IF6: set rec_threshold, only executed once
 					if(-1 == cvr->rec_threshold[warp_num]){
-						__shared__ int temp_rec_threshold;
-						switch(lane_num){
-							case 31: temp_rec_threshold = 31;
-							case 30: temp_rec_threshold = 30;
-							case 29: temp_rec_threshold = 29;
-							case 28: temp_rec_threshold = 28;
-							case 27: temp_rec_threshold = 27;
-							case 26: temp_rec_threshold = 26;
-							case 25: temp_rec_threshold = 25;
-							case 24: temp_rec_threshold = 24;
-							case 23: temp_rec_threshold = 23;
-							case 22: temp_rec_threshold = 22;
-							case 21: temp_rec_threshold = 21;
-							case 20: temp_rec_threshold = 20;
-							case 19: temp_rec_threshold = 19;
-							case 18: temp_rec_threshold = 18;
-							case 17: temp_rec_threshold = 17;
-							case 16: temp_rec_threshold = 16;
-							case 15: temp_rec_threshold = 15;
-							case 14: temp_rec_threshold = 14;
-							case 13: temp_rec_threshold = 13;
-							case 12: temp_rec_threshold = 12;
-							case 11: temp_rec_threshold = 11;
-							case 10: temp_rec_threshold = 10;
-							case  9: temp_rec_threshold =  9;
-							case  8: temp_rec_threshold =  8;
-							case  7: temp_rec_threshold =  7;
-							case  6: temp_rec_threshold =  6;
-							case  5: temp_rec_threshold =  5;
-							case  4: temp_rec_threshold =  4;
-							case  3: temp_rec_threshold =  3;
-							case  2: temp_rec_threshold =  2;
-							case  1: temp_rec_threshold =  1;
-							case  0: temp_rec_threshold =  0;
+                        if(0 == count){
+    						switch(lane_num){
+	    						case 31: temp_rec_threshold[warp_num] = 31; break;
+		    					case 30: temp_rec_threshold[warp_num] = 30; break;
+			    				case 29: temp_rec_threshold[warp_num] = 29; break;
+				    			case 28: temp_rec_threshold[warp_num] = 28; break;
+					    		case 27: temp_rec_threshold[warp_num] = 27; break;
+						    	case 26: temp_rec_threshold[warp_num] = 26; break;
+							    case 25: temp_rec_threshold[warp_num] = 25; break;
+    							case 24: temp_rec_threshold[warp_num] = 24; break;
+	    						case 23: temp_rec_threshold[warp_num] = 23; break;
+		    					case 22: temp_rec_threshold[warp_num] = 22; break;
+			    				case 21: temp_rec_threshold[warp_num] = 21; break;
+				    			case 20: temp_rec_threshold[warp_num] = 20; break;
+					    		case 19: temp_rec_threshold[warp_num] = 19; break;
+						    	case 18: temp_rec_threshold[warp_num] = 18; break;
+							    case 17: temp_rec_threshold[warp_num] = 17; break;
+							    case 16: temp_rec_threshold[warp_num] = 16; break;
+						    	case 15: temp_rec_threshold[warp_num] = 15; break;
+					    		case 14: temp_rec_threshold[warp_num] = 14; break;
+				    			case 13: temp_rec_threshold[warp_num] = 13; break;
+			    				case 12: temp_rec_threshold[warp_num] = 12; break;
+		    					case 11: temp_rec_threshold[warp_num] = 11; break;
+	    						case 10: temp_rec_threshold[warp_num] = 10; break;
+    							case  9: temp_rec_threshold[warp_num] =  9; break;
+							    case  8: temp_rec_threshold[warp_num] =  8; break;
+							    case  7: temp_rec_threshold[warp_num] =  7; break;
+						    	case  6: temp_rec_threshold[warp_num] =  6; break;
+					    		case  5: temp_rec_threshold[warp_num] =  5; break;
+				    			case  4: temp_rec_threshold[warp_num] =  4; break;
+			    				case  3: temp_rec_threshold[warp_num] =  3; break;
+		    					case  2: temp_rec_threshold[warp_num] =  2; break;
+	    						case  1: temp_rec_threshold[warp_num] =  1; break;
+    							case  0: temp_rec_threshold[warp_num] =  0;
+                            }
 						}
 						if(0 == lane_num){
-							temp_rec_threshold += (i - 1) * THREADS_PER_WARP;
-							cvr->rec_threshold[warp_num] = temp_rec_threshold < 0 ? 0 : temp_rec_threshold;
+							temp_rec_threshold[warp_num] += (i - 1) * THREADS_PER_WARP;
+							cvr->rec_threshold[warp_num] = temp_rec_threshold[warp_num] < 0 ? 0 : temp_rec_threshold[warp_num];
 						}
 					}// END IF6
 
-					__shared__ int average;
 					if(0 == lane_num){
-						average = 0;
+						average[warp_num] = 0;
 					}
-					atomicAdd(&average, count);
+					atomicAdd(&average[warp_num], count);
 					if(0 == lane_num){
-						average = (average + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+						average[warp_num] = (average[warp_num] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
 					}
 
-					if(0 == average){
+                    // IF7: stealing
+					if(0 == average[warp_num]){
 						if(i != n_warp_vals / THREADS_PER_WARP){
 							printf("ERROR: *** last round of preprocessing is incorrect ***\n");
 //							return ERROR;
 						}
 						continue;
 					}else{
-						__shared__ int candidate;
 						if(0 == lane_num){
-							candidate = -1;
+							candidate[warp_num] = -1;
 						}
-						if(count > average){
+						if(count > average[warp_num]){
 							switch(lane_num){
-								case 31: candidate = 31;
-								case 30: candidate = 30;
-								case 29: candidate = 29;
-								case 28: candidate = 28;
-								case 27: candidate = 27;
-								case 26: candidate = 26;
-								case 25: candidate = 25;
-								case 24: candidate = 24;
-								case 23: candidate = 23;
-								case 22: candidate = 22;
-								case 21: candidate = 21;
-								case 20: candidate = 20;
-								case 19: candidate = 19;
-								case 18: candidate = 18;
-								case 17: candidate = 17;
-								case 16: candidate = 16;
-								case 15: candidate = 15;
-								case 14: candidate = 14;
-								case 13: candidate = 13;
-								case 12: candidate = 12;
-								case 11: candidate = 11;
-								case 10: candidate = 10;
-								case  9: candidate =  9;
-								case  8: candidate =  8;
-								case  7: candidate =  7;
-								case  6: candidate =  6;
-								case  5: candidate =  5;
-								case  4: candidate =  4;
-								case  3: candidate =  3;
-								case  2: candidate =  2;
-								case  1: candidate =  1;
-								case  0: candidate =  0;
+								case 31: candidate[warp_num] = 31; break;
+								case 30: candidate[warp_num] = 30; break;
+								case 29: candidate[warp_num] = 29; break;
+								case 28: candidate[warp_num] = 28; break;
+								case 27: candidate[warp_num] = 27; break;
+								case 26: candidate[warp_num] = 26; break;
+								case 25: candidate[warp_num] = 25; break;
+								case 24: candidate[warp_num] = 24; break;
+								case 23: candidate[warp_num] = 23; break;
+								case 22: candidate[warp_num] = 22; break;
+								case 21: candidate[warp_num] = 21; break;
+								case 20: candidate[warp_num] = 20; break;
+								case 19: candidate[warp_num] = 19; break;
+								case 18: candidate[warp_num] = 18; break;
+								case 17: candidate[warp_num] = 17; break;
+								case 16: candidate[warp_num] = 16; break;
+								case 15: candidate[warp_num] = 15; break;
+								case 14: candidate[warp_num] = 14; break;
+								case 13: candidate[warp_num] = 13; break;
+								case 12: candidate[warp_num] = 12; break;
+								case 11: candidate[warp_num] = 11; break;
+								case 10: candidate[warp_num] = 10; break;
+								case  9: candidate[warp_num] =  9; break;
+								case  8: candidate[warp_num] =  8; break;
+								case  7: candidate[warp_num] =  7; break;
+								case  6: candidate[warp_num] =  6; break;
+								case  5: candidate[warp_num] =  5; break;
+								case  4: candidate[warp_num] =  4; break;
+								case  3: candidate[warp_num] =  3; break;
+								case  2: candidate[warp_num] =  2; break;
+								case  1: candidate[warp_num] =  1; break;
+								case  0: candidate[warp_num] =  0;
 							}
 						}
 
-						__shared__ int selected;
 						if(0 == count){
 							switch(lane_num){
-								case 31: selected = 31;
-								case 30: selected = 30;
-								case 29: selected = 29;
-								case 28: selected = 28;
-								case 27: selected = 27;
-								case 26: selected = 26;
-								case 25: selected = 25;
-								case 24: selected = 24;
-								case 23: selected = 23;
-								case 22: selected = 22;
-								case 21: selected = 21;
-								case 20: selected = 20;
-								case 19: selected = 19;
-								case 18: selected = 18;
-								case 17: selected = 17;
-								case 16: selected = 16;
-								case 15: selected = 15;
-								case 14: selected = 14;
-								case 13: selected = 13;
-								case 12: selected = 12;
-								case 11: selected = 11;
-								case 10: selected = 10;
-								case  9: selected =  9;
-								case  8: selected =  8;
-								case  7: selected =  7;
-								case  6: selected =  6;
-								case  5: selected =  5;
-								case  4: selected =  4;
-								case  3: selected =  3;
-								case  2: selected =  2;
-								case  1: selected =  1;
-								case  0: selected =  0;
+								case 31: selected[warp_num] = 31; break;
+								case 30: selected[warp_num] = 30; break;
+								case 29: selected[warp_num] = 29; break;
+								case 28: selected[warp_num] = 28; break;
+								case 27: selected[warp_num] = 27; break;
+								case 26: selected[warp_num] = 26; break;
+								case 25: selected[warp_num] = 25; break;
+								case 24: selected[warp_num] = 24; break;
+								case 23: selected[warp_num] = 23; break;
+								case 22: selected[warp_num] = 22; break;
+								case 21: selected[warp_num] = 21; break;
+								case 20: selected[warp_num] = 20; break;
+								case 19: selected[warp_num] = 19; break;
+								case 18: selected[warp_num] = 18; break;
+								case 17: selected[warp_num] = 17; break;
+								case 16: selected[warp_num] = 16; break;
+								case 15: selected[warp_num] = 15; break;
+								case 14: selected[warp_num] = 14; break;
+								case 13: selected[warp_num] = 13; break;
+								case 12: selected[warp_num] = 12; break;
+								case 11: selected[warp_num] = 11; break;
+								case 10: selected[warp_num] = 10; break;
+								case  9: selected[warp_num] =  9; break;
+								case  8: selected[warp_num] =  8; break;
+								case  7: selected[warp_num] =  7; break;
+								case  6: selected[warp_num] =  6; break;
+								case  5: selected[warp_num] =  5; break;
+								case  4: selected[warp_num] =  4; break;
+								case  3: selected[warp_num] =  3; break;
+								case  2: selected[warp_num] =  2; break;
+								case  1: selected[warp_num] =  1; break;
+								case  0: selected[warp_num] =  0;
 							}
 						}
 
-						if(-1 == candidate){
-							if(selected == lane_num){
+						if(-1 == candidate[warp_num]){
+							if(selected[warp_num] == lane_num){
 								valID = -1;
 								count = 1;
 							}
 						}else{
-							if(selected == lane_num){
-								rowID = candidate;
-								valID = __shfl(valID, candidate);
-								count = average;
+                            if(candidate[warp_num] == lane_num){
+                                temp_rec_threshold[warp_num] = valID;
+// there must be something wrong with shuffle instruction, so i reuse temp_rec_threshold (shared) instread
 							}
-							if(candidate == lane_num){
-								rowID = candidate;
-								valID = valID + average;
-								count = count - average;
+							if(selected[warp_num] == lane_num){
+								rowID = candidate[warp_num];
+//								valID = __shfl(valID, candidate[warp_num]);
+                                valID = temp_rec_threshold[warp_num];
+								count = average[warp_num];
 							}
+                            if(candidate[warp_num] == lane_num){
+                            	rowID = candidate[warp_num];
+								valID = valID + average[warp_num];
+								count = count - average[warp_num];
+                            }
 						}
 						
 
-					} // END IF4
-				}
-			} // END IF2
+					} // END IF7
+				} // END IF4
+                if(0 == lane_num){
+                    count_and[warp_num] = 1;
+                }
+                atomicAnd(&count_and[warp_num], count);
+                } // END WHILE1
+			} // END IF2 
 
 			int addr = warp_gather_base + lane_num;
 			if(-1 == valID){
@@ -964,8 +983,9 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 			}else{
 				cvr->val[addr] = csr->val[valID];
 				cvr->colidx[addr] = csr->col_idx[valID];
+                valID++;
 			}
-			valID++;
+//			valID++;
 			count--;
             warp_gather_base += THREADS_PER_WARP;
 			
