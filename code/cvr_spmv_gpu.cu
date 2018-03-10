@@ -25,109 +25,109 @@
 //    (2)and atomicAdd in spmv_kernel() will be changed 
 
 #define CHECK(call){\
-	const cudaError_t error = call;\
-	if(error != cudaSuccess){\
-		printf("Error: %s:%d\n", __FILE__, __LINE__);\
-		printf("code: %d, reason: %s\n", error, cudaGetErrorString(error));\
-		exit(ERROR);\
-	}\
+    const cudaError_t error = call;\
+    if(error != cudaSuccess){\
+        printf("Error: %s:%d\n", __FILE__, __LINE__);\
+        printf("code: %d, reason: %s\n", error, cudaGetErrorString(error));\
+        exit(ERROR);\
+    }\
 }
 
 #define HOST_CHECK(ptr){\
-	if(ptr == NULL){\
-		printf("Error: %s:%d\n", __FILE__, __LINE__);\
-		printf("Memory overflow!\n");\
-		exit(ERROR);\
-	}\
+    if(ptr == NULL){\
+        printf("Error: %s:%d\n", __FILE__, __LINE__);\
+        printf("Memory overflow!\n");\
+        exit(ERROR);\
+    }\
 }
 
 typedef struct triple{
-	int x;
-	int y;
-	floatType val;
+    int x;
+    int y;
+    floatType val;
 }triple_t;
 
 typedef struct coo{
-	triple_t *triple;
-	int ncol;
-	int nrow;
-	int nnz;
+    triple_t *triple;
+    int ncol;
+    int nrow;
+    int nnz;
 }coo_t; // coordinate format
 
 typedef struct csr{
-	int ncol;
-	int nrow;
-	int nnz;
-	floatType *val;
-	int *col_idx;
-	int *row_ptr;
+    int ncol;
+    int nrow;
+    int nnz;
+    floatType *val;
+    int *col_idx;
+    int *row_ptr;
 }csr_t; // compressed sparse row format
 
 typedef struct record{
-	int pos;
-	int wb;
+    int pos;
+    int wb;
 }record_t;
 
 typedef struct cvr{
-	int ncol;
-	int nrow;
-	int nnz;
-	floatType *val;
-	int *colidx;
-	record_t *rec;
-	int *rec_threshold;
-	int *tail;
+    int ncol;
+    int nrow;
+    int nnz;
+    floatType *val;
+    int *colidx;
+    record_t *rec;
+    int *rec_threshold;
+    int *tail;
 }cvr_t; // compressed vactorization-oriented sparse row format
 
 
 // auxiliary function used in qsort
 inline int func_cmp(const void *a, const void *b){
-	triple_t *t1 = (triple_t *)a;
-	triple_t *t2 = (triple_t *)b;
-	if(t1->x != t2->x){
-		return t1->x - t2->x;
-	}else{
-		return t1->y - t2->y;
-	}
+    triple_t *t1 = (triple_t *)a;
+    triple_t *t2 = (triple_t *)b;
+    if(t1->x != t2->x){
+        return t1->x - t2->x;
+    }else{
+        return t1->y - t2->y;
+    }
 }
 
 // auxiliary function to get row number
 __device__ inline int func_get_row(int valID, csr_t *csr){
-	int start = 0, end = csr->nrow;
-	int mid = (start + end) / 2;
-	while(start <= end){
-		if(csr->row_ptr[mid] > valID){
-			end = mid - 1;
-		}else if(mid < csr->nrow && csr->row_ptr[mid+1] <= valID){
-			start = mid + 1;
-		}else{
-			while(mid < csr->nrow && csr->row_ptr[mid] == csr->row_ptr[mid+1]){
-				mid++;
-			}
-			return mid;
-		}
-		mid = (start + end) / 2;
-	}
-	printf("*** ERROR: a bug occured in func_get_row ***\n");
-	return ERROR;
+    int start = 0, end = csr->nrow;
+    int mid = (start + end) / 2;
+    while(start <= end){
+        if(csr->row_ptr[mid] > valID){
+            end = mid - 1;
+        }else if(mid < csr->nrow && csr->row_ptr[mid+1] <= valID){
+            start = mid + 1;
+        }else{
+            while(mid < csr->nrow && csr->row_ptr[mid] == csr->row_ptr[mid+1]){
+                mid++;
+            }
+            return mid;
+        }
+        mid = (start + end) / 2;
+    }
+    printf("*** ERROR: a bug occured in func_get_row ***\n");
+    return ERROR;
 }
 
 // auxiliary function to compare result
 inline int func_compare(floatType y, floatType y_verify){
-	if(y - y_verify < -0.0001 || y - y_verify > 0.0001){
-		return 1;
-	}else{
-		return 0;
-	}
+    if(y - y_verify < -0.0001 || y - y_verify > 0.0001){
+        return 1;
+    }else{
+        return 0;
+    }
 }
 
 inline void func_initialData(floatType *ip, int size){
-	time_t t;
-	srand((unsigned)time(&t));
-	for(int i = 0; i < size; i++)	{
-//		ip[i] = (floatType)(rand() & 0xff) / 10.0f;
+    time_t t;
+    srand((unsigned)time(&t));
+    for(int i = 0; i < size; i++)    {
+//        ip[i] = (floatType)(rand() & 0xff) / 10.0f;
         ip[i] = i % 10;
-	}
+    }
 }
 
 // 0-based Matrix Market format -> CSR format
@@ -148,255 +148,260 @@ int n_iterations = 1;
 
 int main(int argc, char **argv){
 
-	/****  runtime configuration  ****/
+    /****  runtime configuration  ****/
 
-	if(argc < 2){
-		printf("ERROR: *** wrong parameter format ***\n");
-		return ERROR;
-	}
-	char *filename = argv[1];
+    if(argc < 2){
+        printf("ERROR: *** wrong parameter format ***\n");
+        return ERROR;
+    }
+    char *filename = argv[1];
 
-	if(argc > 2){
-		griddim[0] = atoi(argv[2]);
-		blockdim[0] = atoi(argv[3]);
-		if(5 == argc){
-			n_iterations = atoi(argv[4]);
-		}
-	}
+    if(argc > 2){
+        griddim[0] = atoi(argv[2]);
+        blockdim[0] = atoi(argv[3]);
+        if(5 == argc){
+            n_iterations = atoi(argv[4]);
+        }
+    }
 
-	/****  \runtime configuration  ****/
-
-
-	/****  basic runtime information  ****/
-
-	printf("Input file: %s\n", filename);
-	printf("Grid dimension: (%d, %d, %d)\n", griddim[0], griddim[1], griddim[2]);
-	printf("Block dimension: (%d, %d, %d)\n", blockdim[0], blockdim[1], blockdim[2]);
-	printf("Number of iterations: %d\n\n", n_iterations);
-
-	/****  \basic runtime information  ****/
+    /****  \runtime configuration  ****/
 
 
-	/****  prepare host_csr  ****/
+    /****  basic runtime information  ****/
 
-	//allocate memory
-	csr_t *h_csr = (csr_t *)malloc(sizeof(csr_t));
-	HOST_CHECK(h_csr);
+    printf("Input file: %s\n", filename);
+    printf("Grid dimension: (%d, %d, %d)\n", griddim[0], griddim[1], griddim[2]);
+    printf("Block dimension: (%d, %d, %d)\n", blockdim[0], blockdim[1], blockdim[2]);
+    printf("Number of iterations: %d\n\n", n_iterations);
 
-	//read matrix to initialize
-	if(read_matrix(h_csr, filename)){
-		printf("ERROR occured in function read_matrix()\n");
-		return ERROR;
-	}
-
-	/****  \prepare host_csr  ****/
+    /****  \basic runtime information  ****/
 
 
-	/****  prepare device_csr  ****/
+    /****  prepare host_csr  ****/
+
+    //allocate memory
+    csr_t *h_csr = (csr_t *)malloc(sizeof(csr_t));
+    HOST_CHECK(h_csr);
+
+    //read matrix to initialize
+    if(read_matrix(h_csr, filename)){
+        printf("ERROR occured in function read_matrix()\n");
+        return ERROR;
+    }
+
+    /****  \prepare host_csr  ****/
+
+
+    /****  prepare device_csr  ****/
     printf("Preparing device_csr...\n");
 
-	csr_t *d_csr = NULL, temp_csr;
-	//allocate device global memory
-	CHECK(cudaMalloc(&d_csr, sizeof(csr_t)));
+    csr_t *d_csr = NULL, temp_csr;
+    //allocate device global memory
+    CHECK(cudaMalloc(&d_csr, sizeof(csr_t)));
 
     temp_csr.ncol = h_csr->ncol;
     temp_csr.nrow = h_csr->nrow;
     temp_csr.nnz = h_csr->nnz;
-	CHECK(cudaMalloc(&temp_csr.val, h_csr->nnz * sizeof(floatType)));
-	CHECK(cudaMalloc(&temp_csr.col_idx, h_csr->nnz * sizeof(int)));
-	CHECK(cudaMalloc(&temp_csr.row_ptr, (h_csr->nrow + 1) * sizeof(int)));
+    CHECK(cudaMalloc(&temp_csr.val, h_csr->nnz * sizeof(floatType)));
+    CHECK(cudaMalloc(&temp_csr.col_idx, h_csr->nnz * sizeof(int)));
+    CHECK(cudaMalloc(&temp_csr.row_ptr, (h_csr->nrow + 1) * sizeof(int)));
 
-	//initialize
-	CHECK(cudaMemcpy(temp_csr.val, h_csr->val, h_csr->nnz * sizeof(floatType), cudaMemcpyHostToDevice));
-	CHECK(cudaMemcpy(temp_csr.col_idx, h_csr->col_idx, h_csr->nnz * sizeof(int), cudaMemcpyHostToDevice));
-	CHECK(cudaMemcpy(temp_csr.row_ptr, h_csr->row_ptr, (h_csr->nrow + 1) * sizeof(int), cudaMemcpyHostToDevice));
+    //initialize
+    CHECK(cudaMemcpy(temp_csr.val, h_csr->val, h_csr->nnz * sizeof(floatType), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(temp_csr.col_idx, h_csr->col_idx, h_csr->nnz * sizeof(int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(temp_csr.row_ptr, h_csr->row_ptr, (h_csr->nrow + 1) * sizeof(int), cudaMemcpyHostToDevice));
 
-	CHECK(cudaMemcpy(d_csr, &temp_csr, sizeof(csr_t), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_csr, &temp_csr, sizeof(csr_t), cudaMemcpyHostToDevice));
 
     printf("OK!\n\n");
-	/****  \prepare device_csr  ****/
+    /****  \prepare device_csr  ****/
 
 
-	/****  prepare device_cvr  ****/
+    /****  prepare device_cvr  ****/
     printf("Preparing device_cvr...\n");
 
-	cvr_t *d_cvr = NULL, temp_cvr;
-	//cvr structure is dependent on matrix and runtime configuration
-	/*
-	**  n_blocks: total number of blocks in this grid
-	**  threads_per_block: number of threads in a block
-	**  n_threads: total number of threads in this grid
-	**  n_warps: total number of warps in this grid
-	**  n_warp_nnz: average[warp_num] number of non-zeros dealed by one warp
-	**  n_warp_vals: upper bond of number of non-zeros dealed by one warp, aligned
-	**  n_warp_recs: upper bond of records needed by one warp, aligned
-	*/
-	int n_blocks = griddim[0] * griddim[1] * griddim[2];
-	int threads_per_block = blockdim[0] * blockdim[1] * blockdim[2];
-	int n_threads = n_blocks * threads_per_block;
+    cvr_t *d_cvr = NULL, temp_cvr;
+    //cvr structure is dependent on matrix and runtime configuration
+    /*
+    **  n_blocks: total number of blocks in this grid
+    **  threads_per_block: number of threads in a block
+    **  n_threads: total number of threads in this grid
+    **  n_warps: total number of warps in this grid
+    **  n_warp_nnz: average[warp_num] number of non-zeros dealed by one warp
+    **  n_warp_vals: upper bond of number of non-zeros dealed by one warp, aligned
+    **  n_warp_recs: upper bond of records needed by one warp, aligned
+    */
+    int n_blocks = griddim[0] * griddim[1] * griddim[2];
+    int threads_per_block = blockdim[0] * blockdim[1] * blockdim[2];
+    int n_threads = n_blocks * threads_per_block;
 
-	int n_warps = (n_threads + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
-	int n_warp_nnz = h_csr->nnz / n_warps;
-	int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-	int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+    int n_warps = (n_threads + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+    int n_warp_nnz = h_csr->nnz / n_warps;
+    int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+    int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
 
-	//allocate device global memory
-	CHECK(cudaMalloc(&d_cvr, sizeof(cvr_t)));
+    //allocate device global memory
+    CHECK(cudaMalloc(&d_cvr, sizeof(cvr_t)));
 
     temp_cvr.ncol = h_csr->ncol;
     temp_cvr.nrow = h_csr->nrow;
     temp_cvr.nnz = h_csr->nnz;
-	CHECK(cudaMalloc(&temp_cvr.val, n_warps * n_warp_vals * sizeof(floatType)));
-	CHECK(cudaMalloc(&temp_cvr.colidx, n_warps * n_warp_vals * sizeof(int)));
-	CHECK(cudaMalloc(&temp_cvr.rec, n_warps * n_warp_recs * sizeof(record_t)));
-	CHECK(cudaMalloc(&temp_cvr.rec_threshold, n_warps * sizeof(int)));
-	CHECK(cudaMalloc(&temp_cvr.tail, n_threads * sizeof(int)));
+    CHECK(cudaMalloc(&temp_cvr.val, n_warps * n_warp_vals * sizeof(floatType)));
+    CHECK(cudaMalloc(&temp_cvr.colidx, n_warps * n_warp_vals * sizeof(int)));
+    CHECK(cudaMalloc(&temp_cvr.rec, n_warps * n_warp_recs * sizeof(record_t)));
+    CHECK(cudaMalloc(&temp_cvr.rec_threshold, n_warps * sizeof(int)));
+    CHECK(cudaMalloc(&temp_cvr.tail, n_threads * sizeof(int)));
 
-	//initialize
-	CHECK(cudaMemset(temp_cvr.rec, 0, n_warps * n_warp_recs * sizeof(record_t)));
+    //initialize
+    CHECK(cudaMemset(temp_cvr.rec, 0, n_warps * n_warp_recs * sizeof(record_t)));
 
-	CHECK(cudaMemcpy(d_cvr, &temp_cvr, sizeof(cvr_t), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_cvr, &temp_cvr, sizeof(cvr_t), cudaMemcpyHostToDevice));
 
     printf("OK!\n\n");
-	/****  \prepare device_cvr  ****/
+    /****  \prepare device_cvr  ****/
 
 
-	/****  prepare host_x, device_x, host_y, device_y and verify_y  ****/
+    /****  prepare host_x, device_x, host_y, device_y and verify_y  ****/
     printf("Preparing vector x and y...\n");
 
-	//allocate memory
-	floatType *h_x = (floatType *)malloc(h_csr->ncol * sizeof(floatType));
-	HOST_CHECK(h_x);
-	floatType *d_x = NULL;
-	CHECK(cudaMalloc(&d_x, h_csr->ncol * sizeof(floatType)));
-	floatType *h_y = (floatType *)malloc(h_csr->nrow * sizeof(floatType));
-	HOST_CHECK(h_y);
-	floatType *d_y = NULL;
-	CHECK(cudaMalloc(&d_y, h_csr->nrow * sizeof(floatType)));
-	floatType *y_verify = (floatType *)malloc(h_csr->nrow * sizeof(floatType));
-	HOST_CHECK(y_verify);
+    //allocate memory
+    floatType *h_x = (floatType *)malloc(h_csr->ncol * sizeof(floatType));
+    HOST_CHECK(h_x);
+    floatType *d_x = NULL;
+    CHECK(cudaMalloc(&d_x, h_csr->ncol * sizeof(floatType)));
+    floatType *h_y = (floatType *)malloc(h_csr->nrow * sizeof(floatType));
+    HOST_CHECK(h_y);
+    floatType *d_y = NULL;
+    CHECK(cudaMalloc(&d_y, h_csr->nrow * sizeof(floatType)));
+    floatType *y_verify = (floatType *)malloc(h_csr->nrow * sizeof(floatType));
+    HOST_CHECK(y_verify);
 
-	//initialize
-	func_initialData(h_x, h_csr->ncol);
-	CHECK(cudaMemcpy(d_x, h_x, h_csr->ncol * sizeof(floatType), cudaMemcpyHostToDevice));
-	memset(h_y, 0, h_csr->nrow * sizeof(floatType));
-	CHECK(cudaMemset(d_y, 0, h_csr->nrow * sizeof(floatType)));
-	memset(y_verify, 0, h_csr->nrow * sizeof(floatType));
+    //initialize
+    func_initialData(h_x, h_csr->ncol);
+    CHECK(cudaMemcpy(d_x, h_x, h_csr->ncol * sizeof(floatType), cudaMemcpyHostToDevice));
+    memset(h_y, 0, h_csr->nrow * sizeof(floatType));
+    CHECK(cudaMemset(d_y, 0, h_csr->nrow * sizeof(floatType)));
+    memset(y_verify, 0, h_csr->nrow * sizeof(floatType));
 
     printf("OK!\n\n");
-	/****  \prepare host_x, device_x, host_y, device_y and verify_y  ****/
+    /****  \prepare host_x, device_x, host_y, device_y and verify_y  ****/
 
 
-	/****  launch kernels  ****/
+    /****  launch kernels  ****/
 
-//	struct timeval tv1, tv2;
-//	long tv_diff1, tv_diff2;
-//	gettimeofday(&tv1, NULL);
+//    struct timeval tv1, tv2;
+//    long tv_diff1, tv_diff2;
+//    gettimeofday(&tv1, NULL);
 
-	// PREPROCESS
-	if(preprocess(d_cvr, d_csr, n_warps)){
-		printf("ERROR occured in function preprocess()\n");
-		return ERROR;
-	}
-	
-	// SPMV KERNEL
-	if(spmv(d_y, d_x, d_cvr)){
-		printf("ERROR occured in function spmv()\n");
-		return ERROR;
-	}
+    // PREPROCESS
+    if(preprocess(d_cvr, d_csr, n_warps)){
+        printf("ERROR occured in function preprocess()\n");
+        return ERROR;
+    }
+    
+    // SPMV KERNEL
+    if(spmv(d_y, d_x, d_cvr)){
+        printf("ERROR occured in function spmv()\n");
+        return ERROR;
+    }
 
-//	gettimeofday(&tv2, NULL);
-//	tv_diff1 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
-//	printf("cvr time(usec): %ld\n", tv_diff1);
+//    gettimeofday(&tv2, NULL);
+//    tv_diff1 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+//    printf("cvr time(usec): %ld\n", tv_diff1);
 
-	/****  \launch kernels  ****/
-
-
-	/****  copy back  ****/
-
-	CHECK(cudaMemcpy(h_y, d_y, h_csr->nrow * sizeof(floatType), cudaMemcpyDeviceToHost));
-
-	/****  \copy back  ****/
+    /****  \launch kernels  ****/
 
 
-	/****  free device memory  ****/
+    /****  copy back  ****/
 
-	CHECK(cudaFree(d_x));
-	CHECK(cudaFree(d_y));
+    CHECK(cudaMemcpy(h_y, d_y, h_csr->nrow * sizeof(floatType), cudaMemcpyDeviceToHost));
 
-	CHECK(cudaFree(temp_cvr.val));
-	CHECK(cudaFree(temp_cvr.colidx));
-	CHECK(cudaFree(temp_cvr.rec));
-	CHECK(cudaFree(temp_cvr.rec_threshold));
-	CHECK(cudaFree(temp_cvr.tail));	
-	CHECK(cudaFree(d_cvr));
-
-	CHECK(cudaFree(temp_csr.val));
-	CHECK(cudaFree(temp_csr.col_idx));
-	CHECK(cudaFree(temp_csr.row_ptr));
-	CHECK(cudaFree(d_csr));
-
-	/****  \free device memory  ****/
+    /****  \copy back  ****/
 
 
-	/****  compute y_verify using csr spmv  ****/
+    /****  free device memory  ****/
 
-//	gettimeofday(&tv1, NULL);
+    CHECK(cudaFree(d_x));
+    CHECK(cudaFree(d_y));
 
-	for(int iteration = 0; iteration < n_iterations; iteration++){
-//		#pragma omp parallel for num_threads(omp_get_num_threads())
-		floatType sum;
-		for(int i = 0; i < h_csr->nrow; i++){
-			sum = 0;
-			for(int j = h_csr->row_ptr[i]; j < h_csr->row_ptr[i+1]; j++){
-				sum += h_csr->val[j] * h_x[h_csr->col_idx[j]];
-			}
-			y_verify[i] += sum;
+    CHECK(cudaFree(temp_cvr.val));
+    CHECK(cudaFree(temp_cvr.colidx));
+    CHECK(cudaFree(temp_cvr.rec));
+    CHECK(cudaFree(temp_cvr.rec_threshold));
+    CHECK(cudaFree(temp_cvr.tail));    
+    CHECK(cudaFree(d_cvr));
+
+    CHECK(cudaFree(temp_csr.val));
+    CHECK(cudaFree(temp_csr.col_idx));
+    CHECK(cudaFree(temp_csr.row_ptr));
+    CHECK(cudaFree(d_csr));
+
+    /****  \free device memory  ****/
+
+
+    /****  compute y_verify using csr spmv  ****/
+
+//    gettimeofday(&tv1, NULL);
+
+    for(int iteration = 0; iteration < n_iterations; iteration++){
+//        #pragma omp parallel for num_threads(omp_get_num_threads())
+        floatType sum;
+        for(int i = 0; i < h_csr->nrow; i++){
+            sum = 0;
+            for(int j = h_csr->row_ptr[i]; j < h_csr->row_ptr[i+1]; j++){
+                sum += h_csr->val[j] * h_x[h_csr->col_idx[j]];
+            }
+            y_verify[i] += sum;
             printf("y[%d]=%f, y_v[%d]=%f\n", i, h_y[i], i, y_verify[i]);
-		}
-	}
+        }
+    }
 
-//	gettimeofday(&tv2, NULL);
-//	tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
-//	printf("csr time(usec): %ld\n", tv_diff2);
+//    gettimeofday(&tv2, NULL);
+//    tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+//    printf("csr time(usec): %ld\n", tv_diff2);
 
-	/****  \compute y_verify using csr spmv  ****/
-
-
-	/****  check the result  ****/
-
-	int count = 0;
-	for(int i = 0; i < h_csr->nrow; i++){
-		if(func_compare(h_y[i], y_verify[i]) != CMP_EQUAL){
-			count++;
-			printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], h_y[i]);	
-		}
-		if(count > 10){
-			break;
-		}
-	}
-
-	if(0 == count){
-		printf("Correct\n");
-	}
-
-	/****  \check the result  ****/
+    /****  \compute y_verify using csr spmv  ****/
 
 
-	/****  free host memory  ****/
+    /****  check the result  ****/
 
-	free(h_x);
-	free(h_y);
-	free(y_verify);
+    int count = 0;
+    floatType y1 = 0, y2 = 0;
+    for(int i = 0; i < h_csr->nrow; i++){
+        if(func_compare(h_y[i], y_verify[i]) != CMP_EQUAL){
+            y1 += h_y[i];
+            y2 += y_verify[i];
+            count++;
+            printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], h_y[i]);    
+        }
+//        if(count > 10){
+//            break;
+//        }
+    }
 
-	free(h_csr->val);
-	free(h_csr->col_idx);
-	free(h_csr->row_ptr);
-	free(h_csr);
+    if(0 == count){
+        printf("Correct\n");
+    }else{
+        printf("count=%d, y_sum=%f, y_v_sum=%f\n", count, y1, y2);
+    }
 
-	/****  \free host memory  ****/
+    /****  \check the result  ****/
 
-	return 0;
+
+    /****  free host memory  ****/
+
+    free(h_x);
+    free(h_y);
+    free(y_verify);
+
+    free(h_csr->val);
+    free(h_csr->col_idx);
+    free(h_csr->row_ptr);
+    free(h_csr);
+
+    /****  \free host memory  ****/
+
+    return 0;
 }
 
 
@@ -408,168 +413,168 @@ int main(int argc, char **argv){
 **     char *filename     Matrix Market Format file
 */
 int read_matrix(csr_t *csr, char *filename){
-	FILE *fp = fopen(filename, "r");
-	if(!fp){
-		printf("ERROR: *** cannot open file: %s ***\n", filename);
-		return ERROR;
-	}
-	
-	printf("Reading matrix...\n");
+    FILE *fp = fopen(filename, "r");
+    if(!fp){
+        printf("ERROR: *** cannot open file: %s ***\n", filename);
+        return ERROR;
+    }
+    
+    printf("Reading matrix...\n");
 
-	char buffer[1024];
-	char id[FIELD_LENGTH], object[FIELD_LENGTH], format[FIELD_LENGTH], field[FIELD_LENGTH], symmetry[FIELD_LENGTH];
-	int field_pattern = 0, field_complex = 0, symmetry_symmetric = 0;
+    char buffer[1024];
+    char id[FIELD_LENGTH], object[FIELD_LENGTH], format[FIELD_LENGTH], field[FIELD_LENGTH], symmetry[FIELD_LENGTH];
+    int field_pattern = 0, field_complex = 0, symmetry_symmetric = 0;
 
-	//read the header of Matrix Market Format
-	if(fgets(buffer, sizeof(buffer), fp)){ 
-		sscanf(buffer, "%s %s %s %s %s", id, object, format, field, symmetry);
-	}else{
-		printf("ERROR: *** empty file: %s ***\n", filename);
-		return ERROR;
-	}
+    //read the header of Matrix Market Format
+    if(fgets(buffer, sizeof(buffer), fp)){ 
+        sscanf(buffer, "%s %s %s %s %s", id, object, format, field, symmetry);
+    }else{
+        printf("ERROR: *** empty file: %s ***\n", filename);
+        return ERROR;
+    }
 
-	//check stored object and format
-	if(strcmp(object, "matrix")){
-		printf("ERROR: *** file %s does not store a matrix ***\n", filename);
-		return ERROR;
-	}
-	if(strcmp(format, "coordinate")){
-		printf("ERROR: *** matrix representation is dense ***\n");
-		return ERROR;
-	}
+    //check stored object and format
+    if(strcmp(object, "matrix")){
+        printf("ERROR: *** file %s does not store a matrix ***\n", filename);
+        return ERROR;
+    }
+    if(strcmp(format, "coordinate")){
+        printf("ERROR: *** matrix representation is dense ***\n");
+        return ERROR;
+    }
 
-	//specific matrix
-	if(0 == strcmp(field, "pattern")){
-		field_pattern = 1;
-	}
-	if(0 == strcmp(field, "complex")){
-		field_complex = 1;
-	}
-	if(0 == strcmp(symmetry, "symmetric")){
-		symmetry_symmetric = 1;
-	}
+    //specific matrix
+    if(0 == strcmp(field, "pattern")){
+        field_pattern = 1;
+    }
+    if(0 == strcmp(field, "complex")){
+        field_complex = 1;
+    }
+    if(0 == strcmp(symmetry, "symmetric")){
+        symmetry_symmetric = 1;
+    }
 
-	//omit comments
-	while(!feof(fp)){
-		fgets(buffer, sizeof(buffer), fp);
-		if('%' != buffer[0]){
-			break;
-		}
-	}
+    //omit comments
+    while(!feof(fp)){
+        fgets(buffer, sizeof(buffer), fp);
+        if('%' != buffer[0]){
+            break;
+        }
+    }
 
-	//number of rows, columns and non-zeros in matrix
-	coo_t coo;
-	sscanf(buffer, "%d %d %d", &coo.nrow, &coo.ncol, &coo.nnz);
-	if(symmetry_symmetric){
-		coo.nnz *= 2;
-	}
-	coo.triple = (triple_t *)malloc(coo.nnz * sizeof(triple_t)); //this pointer is useless out of this function. remember to free it.
-	HOST_CHECK(coo.triple);
+    //number of rows, columns and non-zeros in matrix
+    coo_t coo;
+    sscanf(buffer, "%d %d %d", &coo.nrow, &coo.ncol, &coo.nnz);
+    if(symmetry_symmetric){
+        coo.nnz *= 2;
+    }
+    coo.triple = (triple_t *)malloc(coo.nnz * sizeof(triple_t)); //this pointer is useless out of this function. remember to free it.
+    HOST_CHECK(coo.triple);
 
-	//MMF -> coordinate format
-	int i = 0;
-	if(symmetry_symmetric){
-		if(field_pattern){
-			for(i = 0; i < coo.nnz; i++){
-				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d", &coo.triple[i].x, &coo.triple[i].y);
-				coo.triple[i].val = 1;
-				if(coo.triple[i].x != coo.triple[i].y){
-					coo.triple[i+1].x = coo.triple[i].y;
-					coo.triple[i+1].y = coo.triple[i].x;
-					coo.triple[i+1].val = 1;
-					i++;
-				}
-			}
-		}else if(field_complex){
-			floatType im;
-			for(i = 0; i < coo.nnz; i++){
-				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
-				if(coo.triple[i].x != coo.triple[i].y){
-					coo.triple[i+1].x = coo.triple[i].y;
-					coo.triple[i+1].y = coo.triple[i].x;
-					coo.triple[i+1].val = coo.triple[i].val;
-					i++;
-				}
-			}
-		}else{
-			for(i = 0; i < coo.nnz; i++){
-				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
-				if(coo.triple[i].x != coo.triple[i].y){
-					coo.triple[i+1].x = coo.triple[i].y;
-					coo.triple[i+1].y = coo.triple[i].x;
-					coo.triple[i+1].val = coo.triple[i].val;
-					i++;
-				}
-			}
-		}
-	}else{ // if it is not a symmetric matrix
-		if(field_pattern){
-			for(i = 0; i < coo.nnz; i++){
-				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d", &coo.triple[i].x, &coo.triple[i].y);
-				coo.triple[i].val = 1;
-			}
-		}else if(field_complex){
-			floatType im;
-			for(i = 0; i < coo.nnz; i++){
-				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
-			}
-		}else{
-			for(i = 0; i < coo.nnz; i++){
-				fgets(buffer, sizeof(buffer), fp);
-				sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
-			}
-		}
-	}
-	fclose(fp);
+    //MMF -> coordinate format
+    int i = 0;
+    if(symmetry_symmetric){
+        if(field_pattern){
+            for(i = 0; i < coo.nnz; i++){
+                fgets(buffer, sizeof(buffer), fp);
+                sscanf(buffer, "%d %d", &coo.triple[i].x, &coo.triple[i].y);
+                coo.triple[i].val = 1;
+                if(coo.triple[i].x != coo.triple[i].y){
+                    coo.triple[i+1].x = coo.triple[i].y;
+                    coo.triple[i+1].y = coo.triple[i].x;
+                    coo.triple[i+1].val = 1;
+                    i++;
+                }
+            }
+        }else if(field_complex){
+            floatType im;
+            for(i = 0; i < coo.nnz; i++){
+                fgets(buffer, sizeof(buffer), fp);
+                sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
+                if(coo.triple[i].x != coo.triple[i].y){
+                    coo.triple[i+1].x = coo.triple[i].y;
+                    coo.triple[i+1].y = coo.triple[i].x;
+                    coo.triple[i+1].val = coo.triple[i].val;
+                    i++;
+                }
+            }
+        }else{
+            for(i = 0; i < coo.nnz; i++){
+                fgets(buffer, sizeof(buffer), fp);
+                sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
+                if(coo.triple[i].x != coo.triple[i].y){
+                    coo.triple[i+1].x = coo.triple[i].y;
+                    coo.triple[i+1].y = coo.triple[i].x;
+                    coo.triple[i+1].val = coo.triple[i].val;
+                    i++;
+                }
+            }
+        }
+    }else{ // if it is not a symmetric matrix
+        if(field_pattern){
+            for(i = 0; i < coo.nnz; i++){
+                fgets(buffer, sizeof(buffer), fp);
+                sscanf(buffer, "%d %d", &coo.triple[i].x, &coo.triple[i].y);
+                coo.triple[i].val = 1;
+            }
+        }else if(field_complex){
+            floatType im;
+            for(i = 0; i < coo.nnz; i++){
+                fgets(buffer, sizeof(buffer), fp);
+                sscanf(buffer, "%d %d %f %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val, &im);
+            }
+        }else{
+            for(i = 0; i < coo.nnz; i++){
+                fgets(buffer, sizeof(buffer), fp);
+                sscanf(buffer, "%d %d %f", &coo.triple[i].x, &coo.triple[i].y, &coo.triple[i].val);
+            }
+        }
+    }
+    fclose(fp);
 
-	if(i > coo.nnz){
-		printf("ERROR: *** too many entries occered ***\n");
-		return ERROR;
-	}
-	printf("\nMatrix is in coordinate format now\n");
+    if(i > coo.nnz){
+        printf("ERROR: *** too many entries occered ***\n");
+        return ERROR;
+    }
+    printf("\nMatrix is in coordinate format now\n");
 
-	printf("\nMatrix Information:\n");
-	printf("Number of rows      : %d\n", coo.nrow);
-	printf("Number of columns   : %d\n", coo.ncol);
-	printf("Number of non-zeros : %d\n\n", coo.nnz);
+    printf("\nMatrix Information:\n");
+    printf("Number of rows      : %d\n", coo.nrow);
+    printf("Number of columns   : %d\n", coo.ncol);
+    printf("Number of non-zeros : %d\n\n", coo.nnz);
 
-	//COO -> CSR
-	printf("Coverting to CSR format...\n");
+    //COO -> CSR
+    printf("Coverting to CSR format...\n");
 
-	csr->ncol = coo.ncol;
-	csr->nrow = coo.nrow;
-	csr->nnz = coo.nnz;
-	csr->val = (floatType *)malloc(csr->nnz * sizeof(floatType));
-	HOST_CHECK(csr->val);
-	csr->col_idx = (int *)malloc(csr->nnz * sizeof(int));
-	HOST_CHECK(csr->col_idx);
-	csr->row_ptr = (int *)malloc((csr->nrow + 1) * sizeof(int));
-	HOST_CHECK(csr->row_ptr);
+    csr->ncol = coo.ncol;
+    csr->nrow = coo.nrow;
+    csr->nnz = coo.nnz;
+    csr->val = (floatType *)malloc(csr->nnz * sizeof(floatType));
+    HOST_CHECK(csr->val);
+    csr->col_idx = (int *)malloc(csr->nnz * sizeof(int));
+    HOST_CHECK(csr->col_idx);
+    csr->row_ptr = (int *)malloc((csr->nrow + 1) * sizeof(int));
+    HOST_CHECK(csr->row_ptr);
 
-	qsort(coo.triple, coo.nnz, sizeof(triple_t), func_cmp);
+    qsort(coo.triple, coo.nnz, sizeof(triple_t), func_cmp);
 
-	csr->row_ptr[0] = 0;
-	int r = 0;
-	for(i = 0; i < csr->nnz; i++){
-		while(coo.triple[i].x - COO_BASE != r){
-			csr->row_ptr[++r] = i;
-		}
-		csr->val[i] = coo.triple[i].val;
-		csr->col_idx[i] = coo.triple[i].y - COO_BASE;
-	}
-	while(r < csr->nrow){
-		csr->row_ptr[++r] = i;
-	}
-	printf("OK!\n\n");
+    csr->row_ptr[0] = 0;
+    int r = 0;
+    for(i = 0; i < csr->nnz; i++){
+        while(coo.triple[i].x - COO_BASE != r){
+            csr->row_ptr[++r] = i;
+        }
+        csr->val[i] = coo.triple[i].val;
+        csr->col_idx[i] = coo.triple[i].y - COO_BASE;
+    }
+    while(r < csr->nrow){
+        csr->row_ptr[++r] = i;
+    }
+    printf("OK!\n\n");
 
-	free(coo.triple);
+    free(coo.triple);
 
-	return OK;
+    return OK;
 }
 
 
@@ -581,18 +586,18 @@ int read_matrix(csr_t *csr, char *filename){
 **     csr_t *d_csr       initialized csr_t pointer(device)
 */
 int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps){
-	printf("Preprocess start.\n");
+    printf("Preprocess start.\n");
 
-	dim3 grid(griddim[0], griddim[1], griddim[2]);
-	dim3 block(blockdim[0], blockdim[1], blockdim[2]);
+    dim3 grid(griddim[0], griddim[1], griddim[2]);
+    dim3 block(blockdim[0], blockdim[1], blockdim[2]);
 
-	preprocess_kernel<<<grid, block, 7*n_warps*sizeof(int)>>>(d_cvr, d_csr);
-	CHECK(cudaGetLastError());
-	cudaDeviceSynchronize();
+    preprocess_kernel<<<grid, block, 7*n_warps*sizeof(int)>>>(d_cvr, d_csr);
+    CHECK(cudaGetLastError());
+    cudaDeviceSynchronize();
 
-	printf("OK!\n\n");
+    printf("OK!\n\n");
 
-	return OK;
+    return OK;
 }
 
 
@@ -605,500 +610,510 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps){
 **     cvr_t *d_cvr       allocated cvr_t pointer(device)
 */
 int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr){
-	printf("Sparse Matrix-Vector multiply start.\n");
+    printf("Sparse Matrix-Vector multiply start.\n");
 
-	dim3 grid(griddim[0], griddim[1], griddim[2]);
-	dim3 block(blockdim[0], blockdim[1], blockdim[2]);
+    dim3 grid(griddim[0], griddim[1], griddim[2]);
+    dim3 block(blockdim[0], blockdim[1], blockdim[2]);
 
-	int iteration;
-	//FOR1
-	for(iteration = 0; iteration < n_iterations; iteration++){
-		spmv_kernel<<<grid, block>>>(d_y, d_x, d_cvr);
-		CHECK(cudaGetLastError());
-		cudaDeviceSynchronize();
-	} //ENDFOR1: iteration
+    int iteration;
+    //FOR1
+    for(iteration = 0; iteration < n_iterations; iteration++){
+        spmv_kernel<<<grid, block>>>(d_y, d_x, d_cvr);
+        CHECK(cudaGetLastError());
+        cudaDeviceSynchronize();
+    } //ENDFOR1: iteration
 
-	printf("OK!\n");
+    printf("OK!\n");
 
-	return OK;
+    return OK;
 }
 
 
 
 __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
-	extern __shared__ int var_ptr[];
-	// general case
-	/* 
-	** Basic information of block and thread:
-	**   block_num:         current block id
-	**   thread_offset:     current thread id in this block
-	**   threads_per_block: number of threads in a block
-	**   thread_num:        current thread id in global vision
-	**   n_blocks:          number of blocks in this grid
-	**   warp_num:          current warp id in global vision
-	**   n_warps:           number of warps in this grid
-	**   lane_num:          current thread id in this warp
-	*/
-	//int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
-	//int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
-	//int threads_per_block = blockDim.x * blockDim.y * blockDim.z;
-	//int thread_num = block_num * threads_per_block + thread_offset;
-	//int n_blocks = gridDim.x * gridDim.y * gridDim.z;
+    extern __shared__ int var_ptr[];
+    // general case
+    /* 
+    ** Basic information of block and thread:
+    **   block_num:         current block id
+    **   thread_offset:     current thread id in this block
+    **   threads_per_block: number of threads in a block
+    **   thread_num:        current thread id in global vision
+    **   n_blocks:          number of blocks in this grid
+    **   warp_num:          current warp id in global vision
+    **   n_warps:           number of warps in this grid
+    **   lane_num:          current thread id in this warp
+    */
+    //int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
+    //int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
+    //int threads_per_block = blockDim.x * blockDim.y * blockDim.z;
+    //int thread_num = block_num * threads_per_block + thread_offset;
+    //int n_blocks = gridDim.x * gridDim.y * gridDim.z;
 
-	// 1-dimension case
-	int block_num = blockIdx.x;
-	int thread_offset = threadIdx.x;
-	int threads_per_block = blockDim.x;
-	int thread_num = block_num * threads_per_block + thread_offset;
-	int n_blocks = gridDim.x;
+    // 1-dimension case
+    int block_num = blockIdx.x;
+    int thread_offset = threadIdx.x;
+    int threads_per_block = blockDim.x;
+    int thread_num = block_num * threads_per_block + thread_offset;
+    int n_blocks = gridDim.x;
 
-	int warp_num = thread_num / THREADS_PER_WARP;
-	int n_warps = (n_blocks * threads_per_block + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
-	int lane_num = thread_num % THREADS_PER_WARP;
+    int warp_num = thread_num / THREADS_PER_WARP;
+    int n_warps = (n_blocks * threads_per_block + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+    int lane_num = thread_num % THREADS_PER_WARP;
 
-	/*
-	** Information of non-zeros in a warp
-	**   warp_start/warp_end:         first/last non-zero's id in this warp
-	**   warp_nnz:                     number of non-zeros in this warp
-	**   warp_start_row/warp_end_row: first/last non-zero's row id in this warp
-	**   nnz_per_warp:                 average[warp_num] number of non-zeros in a warp
-	**   change_warp_nnz:              first n warps have one more non-zeros than others, n=change_warp_nnz
-	*/
-	int warp_start, warp_end, warp_nnz;
-	int warp_start_row, warp_end_row;
+    /*
+    ** Information of non-zeros in a warp
+    **   warp_start/warp_end:         first/last non-zero's id in this warp
+    **   warp_nnz:                     number of non-zeros in this warp
+    **   warp_start_row/warp_end_row: first/last non-zero's row id in this warp
+    **   nnz_per_warp:                 average[warp_num] number of non-zeros in a warp
+    **   change_warp_nnz:              first n warps have one more non-zeros than others, n=change_warp_nnz
+    */
+    int warp_start, warp_end, warp_nnz;
+    int warp_start_row, warp_end_row;
 
-	int nnz_per_warp = csr->nnz / n_warps;
-	int change_warp_nnz = csr->nnz % n_warps;
+    int nnz_per_warp = csr->nnz / n_warps;
+    int change_warp_nnz = csr->nnz % n_warps;
 
-	// information about row range and non-zeros in this warp
-	if(warp_num < change_warp_nnz){
-		warp_start = warp_num * nnz_per_warp + warp_num * 1;
-		warp_end = (warp_num + 1) * nnz_per_warp + (warp_num + 1) * 1 - 1;
-	}else{
-		warp_start = warp_num * nnz_per_warp + change_warp_nnz * 1;
-		warp_end = (warp_num + 1) * nnz_per_warp + change_warp_nnz * 1 - 1;
-	}
-	warp_nnz = warp_end - warp_start + 1;
+    // information about row range and non-zeros in this warp
+    if(warp_num < change_warp_nnz){
+        warp_start = warp_num * nnz_per_warp + warp_num * 1;
+        warp_end = (warp_num + 1) * nnz_per_warp + (warp_num + 1) * 1 - 1;
+    }else{
+        warp_start = warp_num * nnz_per_warp + change_warp_nnz * 1;
+        warp_end = (warp_num + 1) * nnz_per_warp + change_warp_nnz * 1 - 1;
+    }
+    warp_nnz = warp_end - warp_start + 1;
 
-	// IF0: this warp has at least one non-zero to deal with 
-	// ELSE0 is empty
-	if(warp_nnz > 0){
-		warp_start_row = func_get_row(warp_start, csr);
-		warp_end_row = func_get_row(warp_end, csr);
+    // IF0: this warp has at least one non-zero to deal with 
+    // ELSE0 is empty
+    if(warp_nnz > 0){
+        warp_start_row = func_get_row(warp_start, csr);
+        warp_end_row = func_get_row(warp_end, csr);
 
-		/*
-		**   n_warp_nnz: average[warp_num] number of non-zeros in a warp
-		**   n_warp_vals: upperbond of number of values needed to store, related to memory space allocation
-		**   n_warp_recs: upperbond of number of records needed to store, related to memory space allocation
-		**   warp_n_vals: number of values needed to store, must be less than n_warp_vals
-		**   warp_n_recs: number of records needed to store, must be less than n_warp_recs
-		*/
-		int n_warp_nnz = csr->nnz / n_warps;
-		int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-		int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+        /*
+        **   n_warp_nnz: average[warp_num] number of non-zeros in a warp
+        **   n_warp_vals: upperbond of number of values needed to store, related to memory space allocation
+        **   n_warp_recs: upperbond of number of records needed to store, related to memory space allocation
+        **   warp_n_vals: number of values needed to store, must be less than n_warp_vals
+        **   warp_n_recs: number of records needed to store, must be less than n_warp_recs
+        */
+        int n_warp_nnz = csr->nnz / n_warps;
+        int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+        int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
 
-		/*
-		** Trackers
-		**   valID: id of non-zero that is preprocessing by current thread
-		**   rowID: row id of non-zero that is preprocessing by current thread
-		**   count: number of non-zeros haven't been preprocessed in this row
-		**   recID: record id
-		**   cur_row: row id of this row, used to traverse rows in the matrix
-		**   cur_rec: current record id
-		**   gather_base: calculate store address by gather_base + offset
+        /*
+        ** Trackers
+        **   valID: id of non-zero that is preprocessing by current thread
+        **   rowID: row id of non-zero that is preprocessing by current thread
+        **   count: number of non-zeros haven't been preprocessed in this row
+        **   recID: record id
+        **   cur_row: row id of this row, used to traverse rows in the matrix
+        **   cur_rec: current record id
+        **   gather_base: calculate store address by gather_base + offset
 
-		
-		*/
-		int valID, rowID, count, recID, warp_gather_base = warp_num * n_warp_vals;
-		__shared__ int *cur_row, *cur_rec, *count_and, *average, *temp_rec_threshold, *candidate, *selected;
-		// initialize
-		if(0 == thread_num){
-			cur_row = var_ptr;
-			cur_rec = &var_ptr[n_warps];
+        
+        */
+        int valID, rowID, count, recID, warp_gather_base = warp_num * n_warp_vals;
+        __shared__ int *cur_row, *cur_rec, *count_and, *average, *temp_rec_threshold, *candidate, *selected;
+        // initialize
+        if(0 == thread_num){
+            cur_row = var_ptr;
+            cur_rec = &var_ptr[n_warps];
             count_and = &var_ptr[2*n_warps];
             average = &var_ptr[3*n_warps];
             temp_rec_threshold = &var_ptr[4*n_warps];
             candidate = &var_ptr[5*n_warps];
             selected = &var_ptr[6*n_warps];
-		}
-		__syncthreads();
+        }
+        __syncthreads();
 
-		if(0 == lane_num){
-			cur_row[warp_num] = warp_start_row;
-			cur_rec[warp_num] = warp_num * n_warp_recs;
+        if(0 == lane_num){
+            cur_row[warp_num] = warp_start_row;
+            cur_rec[warp_num] = warp_num * n_warp_recs;
             count_and[warp_num] = 1;
             average[warp_num] = 0;
             candidate[warp_num] = -1;
             selected[warp_num] = -1;
-			cvr->rec_threshold[warp_num] = -1;
-		}
-//		__syncthreads();
+            cvr->rec_threshold[warp_num] = -1;
+        }
+//        __syncthreads();
 
-		// initialize valID, rowID, count for preprocessing
-		rowID = atomicAdd(&cur_row[warp_num], 1);
-		// empty rows
-		while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
-			rowID = atomicAdd(&cur_row[warp_num], 1);
-		}
+        // initialize valID, rowID, count for preprocessing
+        rowID = atomicAdd(&cur_row[warp_num], 1);
+        // empty rows
+        while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
+            rowID = atomicAdd(&cur_row[warp_num], 1);
+        }
 
-		if(rowID > warp_end_row){
-			rowID = -1;
-			valID = -1;
-			count = 0;
-		}else{
-			valID = csr->row_ptr[rowID];
-			count = csr->row_ptr[rowID+1] - valID;
-			if(rowID == warp_start_row){
-				count = count + valID - warp_start;
-				valID = warp_start;
-			}
-			if(rowID == warp_end_row){
-				count = warp_end + 1 - valID;
-			}
-//			valID -= warp_start;
-		}
+        if(rowID > warp_end_row){
+            rowID = -1;
+            valID = -1;
+            count = 0;
+        }else{
+            valID = csr->row_ptr[rowID];
+            count = csr->row_ptr[rowID+1] - valID;
+            if(rowID == warp_start_row){
+                count = count + valID - warp_start;
+                valID = warp_start;
+            }
+            if(rowID == warp_end_row){
+                count = warp_end + 1 - valID;
+            }
+//            valID -= warp_start;
+        }
 
-		// IF1: if the number of rows is less than THREADS_PER_WARP, initialize tail_ptr
-		if(cur_row[warp_num] > warp_end_row){
-			cvr->tail[thread_num] = rowID;
-			if(rowID != -1){
-				rowID = thread_num;
-			}
-		} // END IF1
+        // IF1: if the number of rows is less than THREADS_PER_WARP, initialize tail_ptr
+        if(cur_row[warp_num] > warp_end_row){
+            cvr->tail[thread_num] = rowID;
+            if(rowID != -1){
+                rowID = thread_num;
+            }
+        } // END IF1
 
-		// FOR1: preprocessing loop
-		for(int i = 0; i <= n_warp_vals / THREADS_PER_WARP; i++){
-			if(0 == lane_num){
-				count_and[warp_num] = 1;
-			}
-			atomicAnd(&count_and[warp_num], count);
-			// IF2: if recording and feeding/stealing is needed
-			if(0 == count_and[warp_num]){
-				if(0 == count){
-					// IF3: recording
-					if(-1 != rowID){
-						recID = atomicAdd(&cur_rec[warp_num], 1);
-						cvr->rec[recID].pos = (i - 1) * THREADS_PER_WARP + lane_num;
-						cvr->rec[recID].wb = rowID;
-					}// END IF3
+__shared__ int debug_valID[THREADS_PER_WARP], debug_rowID[THREADS_PER_WARP], debug_count[THREADS_PER_WARP];
+        // FOR1: preprocessing loop
+        for(int i = 0; i <= n_warp_vals / THREADS_PER_WARP; i++){
+debug_valID[lane_num] = valID;
+debug_rowID[lane_num] = rowID;
+debug_count[lane_num] = count;
 
-					// empty rows
-					rowID = atomicAdd(&cur_row[warp_num], 1);
-					while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
-						rowID = atomicAdd(&cur_row[warp_num], 1);
-					}
-				}
+            if(0 == lane_num){
+                count_and[warp_num] = 1;
+            }
+            atomicAnd(&count_and[warp_num], count>0);
+//            printf("count=%d, i=%d, I=%d\n", count_and[warp_num], i, n_warp_vals/THREADS_PER_WARP);
+            // IF2: if recording and feeding/stealing is needed
+            if(0 == count_and[warp_num]){
+                if(0 == count){
+                    // IF3: recording
+                    if(-1 != rowID){
+                        recID = atomicAdd(&cur_rec[warp_num], 1);
+                        cvr->rec[recID].pos = (i - 1) * THREADS_PER_WARP + lane_num;
+                        cvr->rec[recID].wb = rowID;
+                    }// END IF3
+
+                    // empty rows
+                    rowID = atomicAdd(&cur_row[warp_num], 1);
+                    while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
+                        rowID = atomicAdd(&cur_row[warp_num], 1);
+                    }
+                }
 
                 // WHILE1: feeding/stealing one by one
                 while(0 == count_and[warp_num]){
+debug_valID[lane_num] = valID;
+debug_rowID[lane_num] = rowID;
+debug_count[lane_num] = count;
 
-				// IF4: tracker feeding
-				if(cur_row[warp_num] <= warp_end_row){
-					if(0 == count){
-						valID = csr->row_ptr[rowID];
-						count = csr->row_ptr[rowID+1] - valID;
-						// IF5 & ELSE1
-						if(cur_row[warp_num] > warp_end_row){
-							cvr->tail[thread_num] = rowID;
-							rowID = warp_num;
-							// make sure once IF5 is executed, IF4 will never be executed 
-							atomicAdd(&cur_row[warp_num], THREADS_PER_WARP);
-						}
-					}
-				}else{ // ELSE4: tracker stealing
-					// IF6: set rec_threshold, only executed once
-					if(-1 == cvr->rec_threshold[warp_num]){
-                        if(0 == count){
-    						switch(lane_num){
-	    						case 31: temp_rec_threshold[warp_num] = 31; break;
-		    					case 30: temp_rec_threshold[warp_num] = 30; break;
-			    				case 29: temp_rec_threshold[warp_num] = 29; break;
-				    			case 28: temp_rec_threshold[warp_num] = 28; break;
-					    		case 27: temp_rec_threshold[warp_num] = 27; break;
-						    	case 26: temp_rec_threshold[warp_num] = 26; break;
-							    case 25: temp_rec_threshold[warp_num] = 25; break;
-    							case 24: temp_rec_threshold[warp_num] = 24; break;
-	    						case 23: temp_rec_threshold[warp_num] = 23; break;
-		    					case 22: temp_rec_threshold[warp_num] = 22; break;
-			    				case 21: temp_rec_threshold[warp_num] = 21; break;
-				    			case 20: temp_rec_threshold[warp_num] = 20; break;
-					    		case 19: temp_rec_threshold[warp_num] = 19; break;
-						    	case 18: temp_rec_threshold[warp_num] = 18; break;
-							    case 17: temp_rec_threshold[warp_num] = 17; break;
-							    case 16: temp_rec_threshold[warp_num] = 16; break;
-						    	case 15: temp_rec_threshold[warp_num] = 15; break;
-					    		case 14: temp_rec_threshold[warp_num] = 14; break;
-				    			case 13: temp_rec_threshold[warp_num] = 13; break;
-			    				case 12: temp_rec_threshold[warp_num] = 12; break;
-		    					case 11: temp_rec_threshold[warp_num] = 11; break;
-	    						case 10: temp_rec_threshold[warp_num] = 10; break;
-    							case  9: temp_rec_threshold[warp_num] =  9; break;
-							    case  8: temp_rec_threshold[warp_num] =  8; break;
-							    case  7: temp_rec_threshold[warp_num] =  7; break;
-						    	case  6: temp_rec_threshold[warp_num] =  6; break;
-					    		case  5: temp_rec_threshold[warp_num] =  5; break;
-				    			case  4: temp_rec_threshold[warp_num] =  4; break;
-			    				case  3: temp_rec_threshold[warp_num] =  3; break;
-		    					case  2: temp_rec_threshold[warp_num] =  2; break;
-	    						case  1: temp_rec_threshold[warp_num] =  1; break;
-    							case  0: temp_rec_threshold[warp_num] =  0;
+                    // IF4: tracker feeding
+                    if(cur_row[warp_num] <= warp_end_row+THREADS_PER_WARP){
+                        if(0 == count && rowID <= warp_end_row){
+                            valID = csr->row_ptr[rowID];
+                            count = csr->row_ptr[rowID+1] - valID;
+                            if(warp_end_row == rowID){
+                                count = warp_end - valID;
                             }
-						}
-						if(0 == lane_num){
-							temp_rec_threshold[warp_num] += (i - 1) * THREADS_PER_WARP;
-							cvr->rec_threshold[warp_num] = temp_rec_threshold[warp_num] < 0 ? 0 : temp_rec_threshold[warp_num];
-						}
-					}// END IF6
+                        }
+                        // IF5 & ELSE1
+//                        if(cur_row[warp_num] > warp_end_row){
+//                            cvr->tail[thread_num] = rowID;
+//                            rowID = lane_num;
+//                            // make sure once IF5 is executed, IF4 will never be executed 
+//                            atomicAdd(&cur_row[warp_num], 1);
+//                        }
+                    }
+                    if(cur_row[warp_num] > warp_end_row){ // ELSE4: tracker stealing
+                        // IF6: set rec_threshold, only executed once
+                        if(-1 == cvr->rec_threshold[warp_num]){
+                            cvr->tail[thread_num] = rowID;
+                            rowID = lane_num;
+                            // make sure once IF5 is executed, IF4 will never be executed 
+                            atomicAdd(&cur_row[warp_num], 1);
+                            if(0 == count){
+                                switch(lane_num){
+                                    case 31: temp_rec_threshold[warp_num] = 31; break;
+                                    case 30: temp_rec_threshold[warp_num] = 30; break;
+                                    case 29: temp_rec_threshold[warp_num] = 29; break;
+                                    case 28: temp_rec_threshold[warp_num] = 28; break;
+                                    case 27: temp_rec_threshold[warp_num] = 27; break;
+                                    case 26: temp_rec_threshold[warp_num] = 26; break;
+                                    case 25: temp_rec_threshold[warp_num] = 25; break;
+                                    case 24: temp_rec_threshold[warp_num] = 24; break;
+                                    case 23: temp_rec_threshold[warp_num] = 23; break;
+                                    case 22: temp_rec_threshold[warp_num] = 22; break;
+                                    case 21: temp_rec_threshold[warp_num] = 21; break;
+                                    case 20: temp_rec_threshold[warp_num] = 20; break;
+                                    case 19: temp_rec_threshold[warp_num] = 19; break;
+                                    case 18: temp_rec_threshold[warp_num] = 18; break;
+                                    case 17: temp_rec_threshold[warp_num] = 17; break;
+                                    case 16: temp_rec_threshold[warp_num] = 16; break;
+                                    case 15: temp_rec_threshold[warp_num] = 15; break;
+                                    case 14: temp_rec_threshold[warp_num] = 14; break;
+                                    case 13: temp_rec_threshold[warp_num] = 13; break;
+                                    case 12: temp_rec_threshold[warp_num] = 12; break;
+                                    case 11: temp_rec_threshold[warp_num] = 11; break;
+                                    case 10: temp_rec_threshold[warp_num] = 10; break;
+                                    case  9: temp_rec_threshold[warp_num] =  9; break;
+                                    case  8: temp_rec_threshold[warp_num] =  8; break;
+                                    case  7: temp_rec_threshold[warp_num] =  7; break;
+                                    case  6: temp_rec_threshold[warp_num] =  6; break;
+                                    case  5: temp_rec_threshold[warp_num] =  5; break;
+                                    case  4: temp_rec_threshold[warp_num] =  4; break;
+                                    case  3: temp_rec_threshold[warp_num] =  3; break;
+                                    case  2: temp_rec_threshold[warp_num] =  2; break;
+                                    case  1: temp_rec_threshold[warp_num] =  1; break;
+                                    case  0: temp_rec_threshold[warp_num] =  0;
+                                }
+                            }
+                            if(0 == lane_num){
+                                temp_rec_threshold[warp_num] += (i - 1) * THREADS_PER_WARP;
+                                cvr->rec_threshold[warp_num] = temp_rec_threshold[warp_num] < 0 ? 0 : temp_rec_threshold[warp_num];
+                            }
+                        }// END IF6
+    
+                        if(0 == lane_num){
+                            average[warp_num] = 0;
+                        }
+                        atomicAdd(&average[warp_num], count);
+                        if(0 == lane_num){
+                            average[warp_num] = (average[warp_num] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+                        }   
+    
+                        // IF7: stealing
+                        if(0 == average[warp_num]){
+                            if(i != n_warp_vals / THREADS_PER_WARP){
+                                printf("ERROR: *** last round of preprocessing is incorrect ***\n");
+//                                return ERROR;
+                            }
+                            break;
+                        }else{
+                            if(0 == lane_num){
+                                candidate[warp_num] = -1;
+                            }
+                            if(count > average[warp_num]){
+                                switch(lane_num){
+                                    case 31: candidate[warp_num] = 31; break;
+                                    case 30: candidate[warp_num] = 30; break;
+                                    case 29: candidate[warp_num] = 29; break;
+                                    case 28: candidate[warp_num] = 28; break;
+                                    case 27: candidate[warp_num] = 27; break;
+                                    case 26: candidate[warp_num] = 26; break;
+                                    case 25: candidate[warp_num] = 25; break;
+                                    case 24: candidate[warp_num] = 24; break;
+                                    case 23: candidate[warp_num] = 23; break;
+                                    case 22: candidate[warp_num] = 22; break;
+                                    case 21: candidate[warp_num] = 21; break;
+                                    case 20: candidate[warp_num] = 20; break;
+                                    case 19: candidate[warp_num] = 19; break;
+                                    case 18: candidate[warp_num] = 18; break;
+                                    case 17: candidate[warp_num] = 17; break;
+                                    case 16: candidate[warp_num] = 16; break;
+                                    case 15: candidate[warp_num] = 15; break;
+                                    case 14: candidate[warp_num] = 14; break;
+                                    case 13: candidate[warp_num] = 13; break;
+                                    case 12: candidate[warp_num] = 12; break;
+                                    case 11: candidate[warp_num] = 11; break;
+                                    case 10: candidate[warp_num] = 10; break;
+                                    case  9: candidate[warp_num] =  9; break;
+                                    case  8: candidate[warp_num] =  8; break;
+                                    case  7: candidate[warp_num] =  7; break;
+                                    case  6: candidate[warp_num] =  6; break;
+                                    case  5: candidate[warp_num] =  5; break;
+                                    case  4: candidate[warp_num] =  4; break;
+                                    case  3: candidate[warp_num] =  3; break;
+                                    case  2: candidate[warp_num] =  2; break;
+                                    case  1: candidate[warp_num] =  1; break;
+                                    case  0: candidate[warp_num] =  0;
+                                }
+                            }
 
-					if(0 == lane_num){
-						average[warp_num] = 0;
-					}
-					atomicAdd(&average[warp_num], count);
-					if(0 == lane_num){
-						average[warp_num] = (average[warp_num] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
-					}
-
-                    // IF7: stealing
-					if(0 == average[warp_num]){
-						if(i != n_warp_vals / THREADS_PER_WARP){
-							printf("ERROR: *** last round of preprocessing is incorrect ***\n");
-//							return ERROR;
-						}
-						continue;
-					}else{
-						if(0 == lane_num){
-							candidate[warp_num] = -1;
-						}
-						if(count > average[warp_num]){
-							switch(lane_num){
-								case 31: candidate[warp_num] = 31; break;
-								case 30: candidate[warp_num] = 30; break;
-								case 29: candidate[warp_num] = 29; break;
-								case 28: candidate[warp_num] = 28; break;
-								case 27: candidate[warp_num] = 27; break;
-								case 26: candidate[warp_num] = 26; break;
-								case 25: candidate[warp_num] = 25; break;
-								case 24: candidate[warp_num] = 24; break;
-								case 23: candidate[warp_num] = 23; break;
-								case 22: candidate[warp_num] = 22; break;
-								case 21: candidate[warp_num] = 21; break;
-								case 20: candidate[warp_num] = 20; break;
-								case 19: candidate[warp_num] = 19; break;
-								case 18: candidate[warp_num] = 18; break;
-								case 17: candidate[warp_num] = 17; break;
-								case 16: candidate[warp_num] = 16; break;
-								case 15: candidate[warp_num] = 15; break;
-								case 14: candidate[warp_num] = 14; break;
-								case 13: candidate[warp_num] = 13; break;
-								case 12: candidate[warp_num] = 12; break;
-								case 11: candidate[warp_num] = 11; break;
-								case 10: candidate[warp_num] = 10; break;
-								case  9: candidate[warp_num] =  9; break;
-								case  8: candidate[warp_num] =  8; break;
-								case  7: candidate[warp_num] =  7; break;
-								case  6: candidate[warp_num] =  6; break;
-								case  5: candidate[warp_num] =  5; break;
-								case  4: candidate[warp_num] =  4; break;
-								case  3: candidate[warp_num] =  3; break;
-								case  2: candidate[warp_num] =  2; break;
-								case  1: candidate[warp_num] =  1; break;
-								case  0: candidate[warp_num] =  0;
-							}
-						}
-
-						if(0 == count){
-							switch(lane_num){
-								case 31: selected[warp_num] = 31; break;
-								case 30: selected[warp_num] = 30; break;
-								case 29: selected[warp_num] = 29; break;
-								case 28: selected[warp_num] = 28; break;
-								case 27: selected[warp_num] = 27; break;
-								case 26: selected[warp_num] = 26; break;
-								case 25: selected[warp_num] = 25; break;
-								case 24: selected[warp_num] = 24; break;
-								case 23: selected[warp_num] = 23; break;
-								case 22: selected[warp_num] = 22; break;
-								case 21: selected[warp_num] = 21; break;
-								case 20: selected[warp_num] = 20; break;
-								case 19: selected[warp_num] = 19; break;
-								case 18: selected[warp_num] = 18; break;
-								case 17: selected[warp_num] = 17; break;
-								case 16: selected[warp_num] = 16; break;
-								case 15: selected[warp_num] = 15; break;
-								case 14: selected[warp_num] = 14; break;
-								case 13: selected[warp_num] = 13; break;
-								case 12: selected[warp_num] = 12; break;
-								case 11: selected[warp_num] = 11; break;
-								case 10: selected[warp_num] = 10; break;
-								case  9: selected[warp_num] =  9; break;
-								case  8: selected[warp_num] =  8; break;
-								case  7: selected[warp_num] =  7; break;
-								case  6: selected[warp_num] =  6; break;
-								case  5: selected[warp_num] =  5; break;
-								case  4: selected[warp_num] =  4; break;
-								case  3: selected[warp_num] =  3; break;
-								case  2: selected[warp_num] =  2; break;
-								case  1: selected[warp_num] =  1; break;
-								case  0: selected[warp_num] =  0;
-							}
-						}
-
-						if(-1 == candidate[warp_num]){
-							if(selected[warp_num] == lane_num){
-								valID = -1;
-								count = 1;
-							}
-						}else{
-                            if(candidate[warp_num] == lane_num){
-                                temp_rec_threshold[warp_num] = valID;
+                            if(0 == count){
+                                switch(lane_num){
+                                    case 31: selected[warp_num] = 31; break;
+                                    case 30: selected[warp_num] = 30; break;
+                                    case 29: selected[warp_num] = 29; break;
+                                    case 28: selected[warp_num] = 28; break;
+                                    case 27: selected[warp_num] = 27; break;
+                                    case 26: selected[warp_num] = 26; break;
+                                    case 25: selected[warp_num] = 25; break;
+                                    case 24: selected[warp_num] = 24; break;
+                                    case 23: selected[warp_num] = 23; break;
+                                    case 22: selected[warp_num] = 22; break;
+                                    case 21: selected[warp_num] = 21; break;
+                                    case 20: selected[warp_num] = 20; break;
+                                    case 19: selected[warp_num] = 19; break;
+                                    case 18: selected[warp_num] = 18; break;
+                                    case 17: selected[warp_num] = 17; break;
+                                    case 16: selected[warp_num] = 16; break;
+                                    case 15: selected[warp_num] = 15; break;
+                                    case 14: selected[warp_num] = 14; break;
+                                    case 13: selected[warp_num] = 13; break;
+                                    case 12: selected[warp_num] = 12; break;
+                                    case 11: selected[warp_num] = 11; break;
+                                    case 10: selected[warp_num] = 10; break;
+                                    case  9: selected[warp_num] =  9; break;
+                                    case  8: selected[warp_num] =  8; break;
+                                    case  7: selected[warp_num] =  7; break;
+                                    case  6: selected[warp_num] =  6; break;
+                                    case  5: selected[warp_num] =  5; break;
+                                    case  4: selected[warp_num] =  4; break;
+                                    case  3: selected[warp_num] =  3; break;
+                                    case  2: selected[warp_num] =  2; break;
+                                    case  1: selected[warp_num] =  1; break;
+                                    case  0: selected[warp_num] =  0;
+                                }
+                            }
+    
+                            if(-1 == candidate[warp_num]){
+                                if(selected[warp_num] == lane_num){
+                                    valID = -1;
+                                    count = 1;
+                                }
+                            }else{
+                                if(candidate[warp_num] == lane_num){
+                                    temp_rec_threshold[warp_num] = valID;
 // there must be something wrong with shuffle instruction, so i reuse temp_rec_threshold (shared) instread
-							}
-							if(selected[warp_num] == lane_num){
-								rowID = candidate[warp_num];
-//								valID = __shfl(valID, candidate[warp_num]);
-                                valID = temp_rec_threshold[warp_num];
-								count = average[warp_num];
-							}
-                            if(candidate[warp_num] == lane_num){
-                            	rowID = candidate[warp_num];
-								valID = valID + average[warp_num];
-								count = count - average[warp_num];
+                                }
+                                if(selected[warp_num] == lane_num){
+                                    rowID = candidate[warp_num];
+//                                    valID = __shfl(valID, candidate[warp_num]);
+                                    valID = temp_rec_threshold[warp_num];
+                                    count = average[warp_num];
+                                }
+                                if(candidate[warp_num] == lane_num){
+                                    rowID = candidate[warp_num];
+                                    valID = valID + average[warp_num];
+                                    count = count - average[warp_num];
+                                }
                             }
-						}
-						
+                        
 
-					} // END IF7
-				} // END IF4
-                if(0 == lane_num){
-                    count_and[warp_num] = 1;
-                }
-                atomicAnd(&count_and[warp_num], count);
+                        } // END IF7
+                    } // END IF4
+                    if(0 == lane_num){
+                        count_and[warp_num] = 1;
+                    }
+                    atomicAnd(&count_and[warp_num], count>0);
                 } // END WHILE1
-			} // END IF2 
+            } // END IF2 
 
-			int addr = warp_gather_base + lane_num;
-			if(-1 == valID){
-				cvr->val[addr] = 0;
-				cvr->colidx[addr] = 0;
-			}else{
-				cvr->val[addr] = csr->val[valID];
-				cvr->colidx[addr] = csr->col_idx[valID];
+            int addr = warp_gather_base + lane_num;
+            if(-1 == valID){
+                cvr->val[addr] = 0;
+                cvr->colidx[addr] = 0;
+            }else{
+                cvr->val[addr] = csr->val[valID];
+                cvr->colidx[addr] = csr->col_idx[valID];
                 valID++;
-			}
-//			valID++;
-			count--;
+            }
+//            valID++;
+            count--;
             warp_gather_base += THREADS_PER_WARP;
-			
-		} // END FOR1
+            
+        } // END FOR1
 
-	} // END IF0
+    } // END IF0
 
 }
 
 
 __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
 
-	//int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
-	//int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
-	//int threads_per_block = blockDim.x * blockDim.y * blockDim.z;
-	//int thread_num = block_num * threads_per_block + thread_offset;
-	//int n_blocks = gridDim.x * gridDim.y * gridDim.z;
+    //int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
+    //int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
+    //int threads_per_block = blockDim.x * blockDim.y * blockDim.z;
+    //int thread_num = block_num * threads_per_block + thread_offset;
+    //int n_blocks = gridDim.x * gridDim.y * gridDim.z;
 
-	// 1-dimension case
-	int block_num = blockIdx.x;
-	int thread_offset = threadIdx.x;
-	int threads_per_block = blockDim.x;
-	int thread_num = block_num * threads_per_block + thread_offset;
-	int n_blocks = gridDim.x;
+    // 1-dimension case
+    int block_num = blockIdx.x;
+    int thread_offset = threadIdx.x;
+    int threads_per_block = blockDim.x;
+    int thread_num = block_num * threads_per_block + thread_offset;
+    int n_blocks = gridDim.x;
 
-	int warp_num = thread_num / THREADS_PER_WARP;
-	int n_warps = (n_blocks * threads_per_block + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
-	int lane_num = thread_num % THREADS_PER_WARP;
+    int warp_num = thread_num / THREADS_PER_WARP;
+    int n_warps = (n_blocks * threads_per_block + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+    int lane_num = thread_num % THREADS_PER_WARP;
 
-	int warp_start, warp_end, warp_nnz;
+    int warp_start, warp_end, warp_nnz;
 
-	int nnz_per_warp = cvr->nnz / n_warps;
-	int change_warp_nnz = cvr->nnz % n_warps;
+    int nnz_per_warp = cvr->nnz / n_warps;
+    int change_warp_nnz = cvr->nnz % n_warps;
 
-	// information about row range and non-zeros in this warp
-	if(warp_num < change_warp_nnz){
-		warp_start = warp_num * nnz_per_warp + warp_num * 1;
-		warp_end = (warp_num + 1) * nnz_per_warp + (warp_num + 1) * 1 - 1;
-	}else{
-		warp_start = warp_num * nnz_per_warp + change_warp_nnz * 1;
-		warp_end = (warp_num + 1) * nnz_per_warp + change_warp_nnz * 1 - 1;
-	}
-	warp_nnz = warp_end - warp_start + 1;
+    // information about row range and non-zeros in this warp
+    if(warp_num < change_warp_nnz){
+        warp_start = warp_num * nnz_per_warp + warp_num * 1;
+        warp_end = (warp_num + 1) * nnz_per_warp + (warp_num + 1) * 1 - 1;
+    }else{
+        warp_start = warp_num * nnz_per_warp + change_warp_nnz * 1;
+        warp_end = (warp_num + 1) * nnz_per_warp + change_warp_nnz * 1 - 1;
+    }
+    warp_nnz = warp_end - warp_start + 1;
 
-	// IF0: this warp has at least one non-zero to deal with 
-	// ELSE0 is empty
-	if(warp_nnz > 0){
-		int n_warp_nnz = cvr->nnz / n_warps;
-		int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-		int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+    // IF0: this warp has at least one non-zero to deal with 
+    // ELSE0 is empty
+    if(warp_nnz > 0){
+        int n_warp_nnz = cvr->nnz / n_warps;
+        int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+        int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
 
-		floatType temp_result[THREADS_PER_WARP];
-		temp_result[lane_num] = 0;
-		int valID = warp_num * n_warp_recs + lane_num;
-		int recID = warp_num * n_warp_recs;
-		int threshold = cvr->rec_threshold[warp_num];
-		for(int i = 0; i < (n_warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP; i++){
-			int x_addr = cvr->colidx[valID];
-			temp_result[lane_num] += cvr->val[valID] * x[x_addr];
+        floatType temp_result[THREADS_PER_WARP];
+        temp_result[lane_num] = 0;
+        int valID = warp_num * n_warp_recs + lane_num;
+        int recID = warp_num * n_warp_recs;
+        int threshold = cvr->rec_threshold[warp_num];
+        for(int i = 0; i < (n_warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP; i++){
+            int x_addr = cvr->colidx[valID];
+            temp_result[lane_num] += cvr->val[valID] * x[x_addr];
 
-			int rec_pos = cvr->rec[recID].pos;
-			int writeback = cvr->rec[recID].wb;
-			int offset = rec_pos % THREADS_PER_WARP;
-			if(rec_pos < threshold){
-				while(rec_pos / THREADS_PER_WARP == i){
-					if(lane_num == offset){
-						if(rec_pos < threshold){
-							atomicAdd(&y[writeback], temp_result[offset]);
-							temp_result[offset] = 0;
-						}else{
-							writeback = cvr->tail[writeback];
-							if(-1 != writeback){
-								atomicAdd(&y[writeback], temp_result[offset]);
-							}
-							temp_result[offset] = 0;
-						}
-					}
-					recID++;
-					rec_pos = cvr->rec[recID].pos;
-					writeback = cvr->rec[recID].wb;
-					offset = rec_pos % THREADS_PER_WARP;
-				}
-			}else{
-				while(rec_pos / THREADS_PER_WARP == i){
-					if(lane_num == offset){
-						writeback = cvr->tail[writeback];
-						if(-1 != writeback){
-							atomicAdd(&y[writeback], temp_result[offset]);
-						}
-						temp_result[offset] = 0;
-					}
-					recID++;
+            int rec_pos = cvr->rec[recID].pos;
+            int writeback = cvr->rec[recID].wb;
+            int offset = rec_pos % THREADS_PER_WARP;
+            if(rec_pos < threshold){
+                while(rec_pos / THREADS_PER_WARP == i){
+                    if(lane_num == offset){
+                        if(rec_pos < threshold){
+                            atomicAdd(&y[writeback], temp_result[offset]);
+                            temp_result[offset] = 0;
+                        }else{
+                            writeback = cvr->tail[writeback];
+                            if(-1 != writeback){
+                                atomicAdd(&y[writeback], temp_result[offset]);
+                            }
+                            temp_result[offset] = 0;
+                        }
+                    }
+                    recID++;
+                    rec_pos = cvr->rec[recID].pos;
+                    writeback = cvr->rec[recID].wb;
+                    offset = rec_pos % THREADS_PER_WARP;
+                }
+            }else{
+                while(rec_pos / THREADS_PER_WARP == i){
+                    if(lane_num == offset){
+                        writeback = cvr->tail[writeback];
+                        if(-1 != writeback){
+                            atomicAdd(&y[writeback], temp_result[offset]);
+                        }
+                        temp_result[offset] = 0;
+                    }
+                    recID++;
                     if(recID >= (warp_num + 1) * n_warp_recs){
                         break;
                     }
-					rec_pos = cvr->rec[recID].pos;
-					writeback = cvr->rec[recID].wb;
-					offset = rec_pos % THREADS_PER_WARP;
-				}
-			}
-			valID += THREADS_PER_WARP;
-		}
+                    rec_pos = cvr->rec[recID].pos;
+                    writeback = cvr->rec[recID].wb;
+                    offset = rec_pos % THREADS_PER_WARP;
+                }
+            }
+            valID += THREADS_PER_WARP;
+        }
 
-	}// END IF0
+    }// END IF0
 }
 
-
-/*
-Possible optimizing method:
-1. update y by (1)another kernel (2)shared memory (3)shared memory and nested kernel
-2. 
-
-*/
 
 
 
