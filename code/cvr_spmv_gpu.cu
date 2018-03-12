@@ -76,6 +76,7 @@ typedef struct cvr{
     int *colidx;
     record_t *rec;
     int *rec_threshold;
+    int *threshold_detail;
     int *tail;
 }cvr_t; // compressed vactorization-oriented sparse row format
 
@@ -250,6 +251,7 @@ int main(int argc, char **argv){
     CHECK(cudaMalloc(&temp_cvr.colidx, n_warps * n_warp_vals * sizeof(int)));
     CHECK(cudaMalloc(&temp_cvr.rec, n_warps * n_warp_recs * sizeof(record_t)));
     CHECK(cudaMalloc(&temp_cvr.rec_threshold, n_warps * sizeof(int)));
+    CHECK(cudaMalloc(&temp_cvr.threshold_detail, n_threads * sizeof(int)));
     CHECK(cudaMalloc(&temp_cvr.tail, n_threads * sizeof(int)));
 
     //initialize
@@ -328,6 +330,7 @@ int main(int argc, char **argv){
     CHECK(cudaFree(temp_cvr.colidx));
     CHECK(cudaFree(temp_cvr.rec));
     CHECK(cudaFree(temp_cvr.rec_threshold));
+    CHECK(cudaFree(temp_cvr.threshold_detail));
     CHECK(cudaFree(temp_cvr.tail));    
     CHECK(cudaFree(d_cvr));
 
@@ -352,7 +355,7 @@ int main(int argc, char **argv){
                 sum += h_csr->val[j] * h_x[h_csr->col_idx[j]];
             }
             y_verify[i] += sum;
-            printf("y[%d]=%f, y_v[%d]=%f\n", i, h_y[i], i, y_verify[i]);
+//            printf("y[%d]=%f, y_v[%d]=%f\n", i, h_y[i], i, y_verify[i]);
         }
     }
 
@@ -737,6 +740,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
             selected[warp_num] = -1;
             cvr->rec_threshold[warp_num] = -1;
         }
+        cvr->threshold_detail[thread_num] = 1; // initially, no threads can write directly to rec.wb in threshold loop
 //        __syncthreads();
 
         // initialize valID, rowID, count for preprocessing
@@ -787,7 +791,7 @@ debug_count[lane_num] = count;
             if(0 == count_and[warp_num]){
                 if(0 == count){
                     // IF3: recording
-                    if(-1 != rowID){
+                    if(-1 != valID){
                         recID = atomicAdd(&cur_rec[warp_num], 1);
                         cvr->rec[recID].pos = (i - 1) * THREADS_PER_WARP + lane_num;
                         cvr->rec[recID].wb = rowID;
@@ -812,66 +816,42 @@ debug_count[lane_num] = count;
                             valID = csr->row_ptr[rowID];
                             count = csr->row_ptr[rowID+1] - valID;
                             if(warp_end_row == rowID){
-                                count = warp_end - valID;
+                                count = warp_end - valID + 1;
                             }
                         }
                         // IF5 & ELSE1
-//                        if(cur_row[warp_num] > warp_end_row){
-//                            cvr->tail[thread_num] = rowID;
-//                            rowID = lane_num;
-//                            // make sure once IF5 is executed, IF4 will never be executed 
-//                            atomicAdd(&cur_row[warp_num], 1);
-//                        }
-                    }
-                    if(cur_row[warp_num] > warp_end_row){ // ELSE4: tracker stealing
-                        // IF6: set rec_threshold, only executed once
-                        if(-1 == cvr->rec_threshold[warp_num]){
+                        if(cur_row[warp_num] > warp_end_row){
                             cvr->tail[thread_num] = rowID;
                             rowID = lane_num;
-                            // make sure once IF5 is executed, IF4 will never be executed 
-                            atomicAdd(&cur_row[warp_num], 1);
-                            if(0 == count){
-                                switch(lane_num){
-                                    case 31: temp_rec_threshold[warp_num] = 31; break;
-                                    case 30: temp_rec_threshold[warp_num] = 30; break;
-                                    case 29: temp_rec_threshold[warp_num] = 29; break;
-                                    case 28: temp_rec_threshold[warp_num] = 28; break;
-                                    case 27: temp_rec_threshold[warp_num] = 27; break;
-                                    case 26: temp_rec_threshold[warp_num] = 26; break;
-                                    case 25: temp_rec_threshold[warp_num] = 25; break;
-                                    case 24: temp_rec_threshold[warp_num] = 24; break;
-                                    case 23: temp_rec_threshold[warp_num] = 23; break;
-                                    case 22: temp_rec_threshold[warp_num] = 22; break;
-                                    case 21: temp_rec_threshold[warp_num] = 21; break;
-                                    case 20: temp_rec_threshold[warp_num] = 20; break;
-                                    case 19: temp_rec_threshold[warp_num] = 19; break;
-                                    case 18: temp_rec_threshold[warp_num] = 18; break;
-                                    case 17: temp_rec_threshold[warp_num] = 17; break;
-                                    case 16: temp_rec_threshold[warp_num] = 16; break;
-                                    case 15: temp_rec_threshold[warp_num] = 15; break;
-                                    case 14: temp_rec_threshold[warp_num] = 14; break;
-                                    case 13: temp_rec_threshold[warp_num] = 13; break;
-                                    case 12: temp_rec_threshold[warp_num] = 12; break;
-                                    case 11: temp_rec_threshold[warp_num] = 11; break;
-                                    case 10: temp_rec_threshold[warp_num] = 10; break;
-                                    case  9: temp_rec_threshold[warp_num] =  9; break;
-                                    case  8: temp_rec_threshold[warp_num] =  8; break;
-                                    case  7: temp_rec_threshold[warp_num] =  7; break;
-                                    case  6: temp_rec_threshold[warp_num] =  6; break;
-                                    case  5: temp_rec_threshold[warp_num] =  5; break;
-                                    case  4: temp_rec_threshold[warp_num] =  4; break;
-                                    case  3: temp_rec_threshold[warp_num] =  3; break;
-                                    case  2: temp_rec_threshold[warp_num] =  2; break;
-                                    case  1: temp_rec_threshold[warp_num] =  1; break;
-                                    case  0: temp_rec_threshold[warp_num] =  0;
-                                }
+                            if(count == 0 && rowID <= warp_end_row){
+                                cvr->threshold_detail[thread_num] = 0; // these threads can write to rec.wb in threshold loop
                             }
+                            // make sure once IF5 is executed, IF4 will never be executed 
+//                            atomicAdd(&cur_row[warp_num], 1);
+                        }
+                    }
+
+                    if(0 == lane_num){
+                        count_and[warp_num] = 1;
+                    }
+                    atomicAnd(&count_and[warp_num], count>0);
+
+                    debug_count[lane_num] = count;
+
+                    if(cur_row[warp_num] > warp_end_row){
+                        // IF6: set rec_threshold, only executed once
+                        if(-1 == cvr->rec_threshold[warp_num]){
+//                            cvr->tail[thread_num] = rowID;
+//                            rowID = lane_num;
                             if(0 == lane_num){
-                                temp_rec_threshold[warp_num] += (i - 1) * THREADS_PER_WARP;
-                                cvr->rec_threshold[warp_num] = temp_rec_threshold[warp_num] < 0 ? 0 : temp_rec_threshold[warp_num];
+                                // make sure once IF6 is executed, IF4 will never be executed 
+                                cur_row[warp_num] += THREADS_PER_WARP;
+                                cvr->rec_threshold[warp_num] = i;
                             }
                         }// END IF6
+                    }
     
+                    if(0 == count_and[warp_num] && cur_row[warp_num] > warp_end_row){ // ELSE4: tracker stealing
                         if(0 == lane_num){
                             average[warp_num] = 0;
                         }
@@ -928,6 +908,8 @@ debug_count[lane_num] = count;
                                 }
                             }
 
+                            debug_count[lane_num] = count;
+
                             if(0 == count){
                                 switch(lane_num){
                                     case 31: selected[warp_num] = 31; break;
@@ -980,11 +962,13 @@ debug_count[lane_num] = count;
 //                                    valID = __shfl(valID, candidate[warp_num]);
                                     valID = temp_rec_threshold[warp_num];
                                     count = average[warp_num];
+                                    selected[warp_num] = -1;
                                 }
                                 if(candidate[warp_num] == lane_num){
                                     rowID = candidate[warp_num];
                                     valID = valID + average[warp_num];
                                     count = count - average[warp_num];
+                                    candidate[warp_num] = -1;
                                 }
                             }
                         
@@ -998,6 +982,9 @@ debug_count[lane_num] = count;
                 } // END WHILE1
             } // END IF2 
 
+            if(warp_gather_base >= n_warp_vals){
+                continue;
+            }
             int addr = warp_gather_base + lane_num;
             if(-1 == valID){
                 cvr->val[addr] = 0;
@@ -1064,6 +1051,7 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
         int valID = warp_num * n_warp_recs + lane_num;
         int recID = warp_num * n_warp_recs;
         int threshold = cvr->rec_threshold[warp_num];
+        int n_recs = warp_num * n_warp_recs + (cvr->nrow + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
         for(int i = 0; i < (n_warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP; i++){
             int x_addr = cvr->colidx[valID];
             temp_result[lane_num] += cvr->val[valID] * x[x_addr];
@@ -1071,10 +1059,23 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
             int rec_pos = cvr->rec[recID].pos;
             int writeback = cvr->rec[recID].wb;
             int offset = rec_pos % THREADS_PER_WARP;
-            if(rec_pos < threshold){
+            
+            if(i < threshold){
                 while(rec_pos / THREADS_PER_WARP == i){
                     if(lane_num == offset){
-                        if(rec_pos < threshold){
+                        atomicAdd(&y[writeback], temp_result[offset]);
+                        temp_result[offset] = 0;
+                    }
+                    recID++;
+                    rec_pos = cvr->rec[recID].pos;
+                    writeback = cvr->rec[recID].wb;
+                    offset = rec_pos % THREADS_PER_WARP;
+                }
+            }else if(i == threshold){
+                int flag = cvr->threshold_detail[thread_num];
+                while(rec_pos / THREADS_PER_WARP == i){
+                    if(lane_num == offset){
+                        if(0 == flag){
                             atomicAdd(&y[writeback], temp_result[offset]);
                             temp_result[offset] = 0;
                         }else{
@@ -1086,6 +1087,9 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
                         }
                     }
                     recID++;
+                    if(recID >= n_recs){
+                        break;
+                    }
                     rec_pos = cvr->rec[recID].pos;
                     writeback = cvr->rec[recID].wb;
                     offset = rec_pos % THREADS_PER_WARP;
@@ -1100,7 +1104,8 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
                         temp_result[offset] = 0;
                     }
                     recID++;
-                    if(recID >= (warp_num + 1) * n_warp_recs){
+                    //if(recID >= (warp_num + 1) * n_warp_recs){
+                    if(recID >= n_recs){
                         break;
                     }
                     rec_pos = cvr->rec[recID].pos;
