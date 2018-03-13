@@ -1046,15 +1046,15 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
         int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
         int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
 
-        floatType temp_result[THREADS_PER_WARP];
-        temp_result[lane_num] = 0;
+        floatType temp_result;
+        temp_result = 0;
         int valID = warp_num * n_warp_recs + lane_num;
         int recID = warp_num * n_warp_recs;
         int threshold = cvr->rec_threshold[warp_num];
         int n_recs = warp_num * n_warp_recs + (cvr->nrow + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
         for(int i = 0; i < (n_warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP; i++){
             int x_addr = cvr->colidx[valID];
-            temp_result[lane_num] += cvr->val[valID] * x[x_addr];
+            temp_result += cvr->val[valID] * x[x_addr];
 
             int rec_pos = cvr->rec[recID].pos;
             int writeback = cvr->rec[recID].wb;
@@ -1063,8 +1063,8 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
             if(i < threshold){
                 while(rec_pos / THREADS_PER_WARP == i){
                     if(lane_num == offset){
-                        atomicAdd(&y[writeback], temp_result[offset]);
-                        temp_result[offset] = 0;
+                        atomicAdd(&y[writeback], temp_result);
+                        temp_result = 0;
                     }
                     recID++;
                     rec_pos = cvr->rec[recID].pos;
@@ -1076,18 +1076,19 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
                 while(rec_pos / THREADS_PER_WARP == i){
                     if(lane_num == offset){
                         if(0 == flag){
-                            atomicAdd(&y[writeback], temp_result[offset]);
-                            temp_result[offset] = 0;
+                            atomicAdd(&y[writeback], temp_result);
+                            temp_result = 0;
                         }else{
                             writeback = cvr->tail[writeback];
                             if(-1 != writeback){
-                                atomicAdd(&y[writeback], temp_result[offset]);
+                                atomicAdd(&y[writeback], temp_result);
                             }
-                            temp_result[offset] = 0;
+                            temp_result = 0;
                         }
                     }
                     recID++;
-                    if(recID >= n_recs){
+                    if(recID >= (warp_num + 1) * n_warp_recs){
+                    //if(recID >= n_recs){
                         break;
                     }
                     rec_pos = cvr->rec[recID].pos;
@@ -1099,13 +1100,13 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
                     if(lane_num == offset){
                         writeback = cvr->tail[writeback];
                         if(-1 != writeback){
-                            atomicAdd(&y[writeback], temp_result[offset]);
+                            atomicAdd(&y[writeback], temp_result);
                         }
-                        temp_result[offset] = 0;
+                        temp_result = 0;
                     }
                     recID++;
-                    //if(recID >= (warp_num + 1) * n_warp_recs){
-                    if(recID >= n_recs){
+                    if(recID >= (warp_num + 1) * n_warp_recs){
+                    //if(recID >= n_recs){
                         break;
                     }
                     rec_pos = cvr->rec[recID].pos;
