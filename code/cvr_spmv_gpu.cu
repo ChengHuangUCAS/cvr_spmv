@@ -126,8 +126,8 @@ inline void func_initialData(floatType *ip, int size){
     time_t t;
     srand((unsigned)time(&t));
     for(int i = 0; i < size; i++)    {
-//        ip[i] = (floatType)(rand() & 0xff) / 10.0f;
-        ip[i] = i % 10;
+        ip[i] = (floatType)(rand() & 0xff) / 10.0f;
+//        ip[i] = i % 10;
     }
 }
 
@@ -661,6 +661,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
     int n_blocks = gridDim.x;
 
     int warp_num = thread_num / THREADS_PER_WARP;
+    int warp_offset = thread_offset / THREADS_PER_WARP;
     int n_warps = (n_blocks * threads_per_block + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
     int lane_num = thread_num % THREADS_PER_WARP;
 
@@ -720,7 +721,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
         int valID, rowID, count, recID, warp_gather_base = warp_num * n_warp_vals;
         __shared__ int *cur_row, *cur_rec, *count_and, *average, *temp_rec_threshold, *candidate, *selected;
         // initialize
-        if(0 == thread_num){
+        if(0 == thread_offset){
             cur_row = var_ptr;
             cur_rec = &var_ptr[n_warps];
             count_and = &var_ptr[2*n_warps];
@@ -732,22 +733,22 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
         __syncthreads();
 
         if(0 == lane_num){
-            cur_row[warp_num] = warp_start_row;
-            cur_rec[warp_num] = warp_num * n_warp_recs;
-            count_and[warp_num] = 1;
-            average[warp_num] = 0;
-            candidate[warp_num] = -1;
-            selected[warp_num] = -1;
+            cur_row[warp_offset] = warp_start_row;
+            cur_rec[warp_offset] = warp_num * n_warp_recs;
+            count_and[warp_offset] = 1;
+            average[warp_offset] = 0;
+            candidate[warp_offset] = -1;
+            selected[warp_offset] = -1;
             cvr->rec_threshold[warp_num] = -1;
         }
         cvr->threshold_detail[thread_num] = 1; // initially, no threads can write directly to rec.wb in threshold loop
 //        __syncthreads();
 
         // initialize valID, rowID, count for preprocessing
-        rowID = atomicAdd(&cur_row[warp_num], 1);
+        rowID = atomicAdd(&cur_row[warp_offset], 1);
         // empty rows
         while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
-            rowID = atomicAdd(&cur_row[warp_num], 1);
+            rowID = atomicAdd(&cur_row[warp_offset], 1);
         }
 
         if(rowID > warp_end_row){
@@ -768,50 +769,46 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
         }
 
         // IF1: if the number of rows is less than THREADS_PER_WARP, initialize tail_ptr
-        if(cur_row[warp_num] > warp_end_row){
+        if(cur_row[warp_offset] > warp_end_row){
             cvr->tail[thread_num] = rowID;
             if(rowID != -1){
                 rowID = thread_num;
             }
+            if(0 == lane_num){
+                cur_row[warp_offset] += THREADS_PER_WARP; // IF4 and IF5(ELSE1) will never be executed
+            }
         } // END IF1
 
-__shared__ int debug_valID[THREADS_PER_WARP], debug_rowID[THREADS_PER_WARP], debug_count[THREADS_PER_WARP];
         // FOR1: preprocessing loop
         for(int i = 0; i <= n_warp_vals / THREADS_PER_WARP; i++){
-debug_valID[lane_num] = valID;
-debug_rowID[lane_num] = rowID;
-debug_count[lane_num] = count;
 
             if(0 == lane_num){
-                count_and[warp_num] = 1;
+                count_and[warp_offset] = 1;
             }
-            atomicAnd(&count_and[warp_num], count>0);
-//            printf("count=%d, i=%d, I=%d\n", count_and[warp_num], i, n_warp_vals/THREADS_PER_WARP);
+            atomicAnd(&count_and[warp_offset], count>0);
+//            printf("count=%d, i=%d, I=%d\n", count_and[warp_], i, n_warp_vals/THREADS_PER_WARP);
             // IF2: if recording and feeding/stealing is needed
-            if(0 == count_and[warp_num]){
+            if(0 == count_and[warp_offset]){
                 if(0 == count){
                     // IF3: recording
                     if(-1 != valID){
-                        recID = atomicAdd(&cur_rec[warp_num], 1);
+                        recID = atomicAdd(&cur_rec[warp_offset], 1);
                         cvr->rec[recID].pos = (i - 1) * THREADS_PER_WARP + lane_num;
                         cvr->rec[recID].wb = rowID;
                     }// END IF3
 
                     // empty rows
-                    rowID = atomicAdd(&cur_row[warp_num], 1);
+                    rowID = atomicAdd(&cur_row[warp_offset], 1);
                     while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
-                        rowID = atomicAdd(&cur_row[warp_num], 1);
+                        rowID = atomicAdd(&cur_row[warp_offset], 1);
                     }
                 }
 
                 // WHILE1: feeding/stealing one by one
-                while(0 == count_and[warp_num]){
-debug_valID[lane_num] = valID;
-debug_rowID[lane_num] = rowID;
-debug_count[lane_num] = count;
+                while(0 == count_and[warp_offset]){
 
                     // IF4: tracker feeding
-                    if(cur_row[warp_num] <= warp_end_row+THREADS_PER_WARP){
+                    if(cur_row[warp_offset] <= warp_end_row+THREADS_PER_WARP){
                         if(0 == count && rowID <= warp_end_row){
                             valID = csr->row_ptr[rowID];
                             count = csr->row_ptr[rowID+1] - valID;
@@ -820,48 +817,47 @@ debug_count[lane_num] = count;
                             }
                         }
                         // IF5 & ELSE1
-                        if(cur_row[warp_num] > warp_end_row){
+                        if(cur_row[warp_offset] > warp_end_row){
                             cvr->tail[thread_num] = rowID;
-                            rowID = lane_num;
+                            rowID = thread_num;
                             if(count == 0 && rowID <= warp_end_row){
                                 cvr->threshold_detail[thread_num] = 0; // these threads can write to rec.wb in threshold loop
                             }
                             // make sure once IF5 is executed, IF4 will never be executed 
-//                            atomicAdd(&cur_row[warp_num], 1);
+//                            atomicAdd(&cur_row[warp_], 1);
                         }
                     }
 
                     if(0 == lane_num){
-                        count_and[warp_num] = 1;
+                        count_and[warp_offset] = 1;
                     }
-                    atomicAnd(&count_and[warp_num], count>0);
+                    atomicAnd(&count_and[warp_offset], count>0);
 
-                    debug_count[lane_num] = count;
 
-                    if(cur_row[warp_num] > warp_end_row){
+                    if(cur_row[warp_offset] > warp_end_row){
                         // IF6: set rec_threshold, only executed once
                         if(-1 == cvr->rec_threshold[warp_num]){
 //                            cvr->tail[thread_num] = rowID;
 //                            rowID = lane_num;
                             if(0 == lane_num){
                                 // make sure once IF6 is executed, IF4 will never be executed 
-                                cur_row[warp_num] += THREADS_PER_WARP;
+                                cur_row[warp_offset] += THREADS_PER_WARP;
                                 cvr->rec_threshold[warp_num] = i;
                             }
                         }// END IF6
                     }
     
-                    if(0 == count_and[warp_num] && cur_row[warp_num] > warp_end_row){ // ELSE4: tracker stealing
+                    if(0 == count_and[warp_offset] && cur_row[warp_offset] > warp_end_row){ // ELSE4: tracker stealing
                         if(0 == lane_num){
-                            average[warp_num] = 0;
+                            average[warp_offset] = 0;
                         }
-                        atomicAdd(&average[warp_num], count);
+                        atomicAdd(&average[warp_offset], count);
                         if(0 == lane_num){
-                            average[warp_num] = (average[warp_num] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+                            average[warp_offset] = (average[warp_offset] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
                         }   
     
                         // IF7: stealing
-                        if(0 == average[warp_num]){
+                        if(0 == average[warp_offset]){
                             if(i != n_warp_vals / THREADS_PER_WARP){
                                 printf("ERROR: *** last round of preprocessing is incorrect ***\n");
 //                                return ERROR;
@@ -869,106 +865,105 @@ debug_count[lane_num] = count;
                             break;
                         }else{
                             if(0 == lane_num){
-                                candidate[warp_num] = -1;
+                                candidate[warp_offset] = -1;
                             }
-                            if(count > average[warp_num]){
+                            if(count > average[warp_offset]){
                                 switch(lane_num){
-                                    case 31: candidate[warp_num] = 31; break;
-                                    case 30: candidate[warp_num] = 30; break;
-                                    case 29: candidate[warp_num] = 29; break;
-                                    case 28: candidate[warp_num] = 28; break;
-                                    case 27: candidate[warp_num] = 27; break;
-                                    case 26: candidate[warp_num] = 26; break;
-                                    case 25: candidate[warp_num] = 25; break;
-                                    case 24: candidate[warp_num] = 24; break;
-                                    case 23: candidate[warp_num] = 23; break;
-                                    case 22: candidate[warp_num] = 22; break;
-                                    case 21: candidate[warp_num] = 21; break;
-                                    case 20: candidate[warp_num] = 20; break;
-                                    case 19: candidate[warp_num] = 19; break;
-                                    case 18: candidate[warp_num] = 18; break;
-                                    case 17: candidate[warp_num] = 17; break;
-                                    case 16: candidate[warp_num] = 16; break;
-                                    case 15: candidate[warp_num] = 15; break;
-                                    case 14: candidate[warp_num] = 14; break;
-                                    case 13: candidate[warp_num] = 13; break;
-                                    case 12: candidate[warp_num] = 12; break;
-                                    case 11: candidate[warp_num] = 11; break;
-                                    case 10: candidate[warp_num] = 10; break;
-                                    case  9: candidate[warp_num] =  9; break;
-                                    case  8: candidate[warp_num] =  8; break;
-                                    case  7: candidate[warp_num] =  7; break;
-                                    case  6: candidate[warp_num] =  6; break;
-                                    case  5: candidate[warp_num] =  5; break;
-                                    case  4: candidate[warp_num] =  4; break;
-                                    case  3: candidate[warp_num] =  3; break;
-                                    case  2: candidate[warp_num] =  2; break;
-                                    case  1: candidate[warp_num] =  1; break;
-                                    case  0: candidate[warp_num] =  0;
+                                    case 31: candidate[warp_offset] = 31; break;
+                                    case 30: candidate[warp_offset] = 30; break;
+                                    case 29: candidate[warp_offset] = 29; break;
+                                    case 28: candidate[warp_offset] = 28; break;
+                                    case 27: candidate[warp_offset] = 27; break;
+                                    case 26: candidate[warp_offset] = 26; break;
+                                    case 25: candidate[warp_offset] = 25; break;
+                                    case 24: candidate[warp_offset] = 24; break;
+                                    case 23: candidate[warp_offset] = 23; break;
+                                    case 22: candidate[warp_offset] = 22; break;
+                                    case 21: candidate[warp_offset] = 21; break;
+                                    case 20: candidate[warp_offset] = 20; break;
+                                    case 19: candidate[warp_offset] = 19; break;
+                                    case 18: candidate[warp_offset] = 18; break;
+                                    case 17: candidate[warp_offset] = 17; break;
+                                    case 16: candidate[warp_offset] = 16; break;
+                                    case 15: candidate[warp_offset] = 15; break;
+                                    case 14: candidate[warp_offset] = 14; break;
+                                    case 13: candidate[warp_offset] = 13; break;
+                                    case 12: candidate[warp_offset] = 12; break;
+                                    case 11: candidate[warp_offset] = 11; break;
+                                    case 10: candidate[warp_offset] = 10; break;
+                                    case  9: candidate[warp_offset] =  9; break;
+                                    case  8: candidate[warp_offset] =  8; break;
+                                    case  7: candidate[warp_offset] =  7; break;
+                                    case  6: candidate[warp_offset] =  6; break;
+                                    case  5: candidate[warp_offset] =  5; break;
+                                    case  4: candidate[warp_offset] =  4; break;
+                                    case  3: candidate[warp_offset] =  3; break;
+                                    case  2: candidate[warp_offset] =  2; break;
+                                    case  1: candidate[warp_offset] =  1; break;
+                                    case  0: candidate[warp_offset] =  0;
                                 }
                             }
 
-                            debug_count[lane_num] = count;
 
                             if(0 == count){
                                 switch(lane_num){
-                                    case 31: selected[warp_num] = 31; break;
-                                    case 30: selected[warp_num] = 30; break;
-                                    case 29: selected[warp_num] = 29; break;
-                                    case 28: selected[warp_num] = 28; break;
-                                    case 27: selected[warp_num] = 27; break;
-                                    case 26: selected[warp_num] = 26; break;
-                                    case 25: selected[warp_num] = 25; break;
-                                    case 24: selected[warp_num] = 24; break;
-                                    case 23: selected[warp_num] = 23; break;
-                                    case 22: selected[warp_num] = 22; break;
-                                    case 21: selected[warp_num] = 21; break;
-                                    case 20: selected[warp_num] = 20; break;
-                                    case 19: selected[warp_num] = 19; break;
-                                    case 18: selected[warp_num] = 18; break;
-                                    case 17: selected[warp_num] = 17; break;
-                                    case 16: selected[warp_num] = 16; break;
-                                    case 15: selected[warp_num] = 15; break;
-                                    case 14: selected[warp_num] = 14; break;
-                                    case 13: selected[warp_num] = 13; break;
-                                    case 12: selected[warp_num] = 12; break;
-                                    case 11: selected[warp_num] = 11; break;
-                                    case 10: selected[warp_num] = 10; break;
-                                    case  9: selected[warp_num] =  9; break;
-                                    case  8: selected[warp_num] =  8; break;
-                                    case  7: selected[warp_num] =  7; break;
-                                    case  6: selected[warp_num] =  6; break;
-                                    case  5: selected[warp_num] =  5; break;
-                                    case  4: selected[warp_num] =  4; break;
-                                    case  3: selected[warp_num] =  3; break;
-                                    case  2: selected[warp_num] =  2; break;
-                                    case  1: selected[warp_num] =  1; break;
-                                    case  0: selected[warp_num] =  0;
+                                    case 31: selected[warp_offset] = 31; break;
+                                    case 30: selected[warp_offset] = 30; break;
+                                    case 29: selected[warp_offset] = 29; break;
+                                    case 28: selected[warp_offset] = 28; break;
+                                    case 27: selected[warp_offset] = 27; break;
+                                    case 26: selected[warp_offset] = 26; break;
+                                    case 25: selected[warp_offset] = 25; break;
+                                    case 24: selected[warp_offset] = 24; break;
+                                    case 23: selected[warp_offset] = 23; break;
+                                    case 22: selected[warp_offset] = 22; break;
+                                    case 21: selected[warp_offset] = 21; break;
+                                    case 20: selected[warp_offset] = 20; break;
+                                    case 19: selected[warp_offset] = 19; break;
+                                    case 18: selected[warp_offset] = 18; break;
+                                    case 17: selected[warp_offset] = 17; break;
+                                    case 16: selected[warp_offset] = 16; break;
+                                    case 15: selected[warp_offset] = 15; break;
+                                    case 14: selected[warp_offset] = 14; break;
+                                    case 13: selected[warp_offset] = 13; break;
+                                    case 12: selected[warp_offset] = 12; break;
+                                    case 11: selected[warp_offset] = 11; break;
+                                    case 10: selected[warp_offset] = 10; break;
+                                    case  9: selected[warp_offset] =  9; break;
+                                    case  8: selected[warp_offset] =  8; break;
+                                    case  7: selected[warp_offset] =  7; break;
+                                    case  6: selected[warp_offset] =  6; break;
+                                    case  5: selected[warp_offset] =  5; break;
+                                    case  4: selected[warp_offset] =  4; break;
+                                    case  3: selected[warp_offset] =  3; break;
+                                    case  2: selected[warp_offset] =  2; break;
+                                    case  1: selected[warp_offset] =  1; break;
+                                    case  0: selected[warp_offset] =  0;
                                 }
                             }
     
-                            if(-1 == candidate[warp_num]){
-                                if(selected[warp_num] == lane_num){
+                            if(-1 == candidate[warp_offset]){
+                                if(selected[warp_offset] == lane_num){
                                     valID = -1;
                                     count = 1;
                                 }
                             }else{
-                                if(candidate[warp_num] == lane_num){
-                                    temp_rec_threshold[warp_num] = valID;
+                                if(candidate[warp_offset] == lane_num){
+                                    temp_rec_threshold[warp_offset] = valID;
 // there must be something wrong with shuffle instruction, so i reuse temp_rec_threshold (shared) instread
                                 }
-                                if(selected[warp_num] == lane_num){
-                                    rowID = candidate[warp_num];
-//                                    valID = __shfl(valID, candidate[warp_num]);
-                                    valID = temp_rec_threshold[warp_num];
-                                    count = average[warp_num];
-                                    selected[warp_num] = -1;
+                                if(selected[warp_offset] == lane_num){
+                                    rowID = candidate[warp_offset] + warp_num * THREADS_PER_WARP;
+//                                    valID = __shfl(valID, candidate[warp_offset]);
+                                    valID = temp_rec_threshold[warp_offset];
+                                    count = average[warp_offset];
+                                    selected[warp_offset] = -1;
                                 }
-                                if(candidate[warp_num] == lane_num){
-                                    rowID = candidate[warp_num];
-                                    valID = valID + average[warp_num];
-                                    count = count - average[warp_num];
-                                    candidate[warp_num] = -1;
+                                if(candidate[warp_offset] == lane_num){
+                                    rowID = candidate[warp_offset] + warp_num * THREADS_PER_WARP;
+                                    valID = valID + average[warp_offset];
+                                    count = count - average[warp_offset];
+                                    candidate[warp_offset] = -1;
                                 }
                             }
                         
@@ -976,13 +971,13 @@ debug_count[lane_num] = count;
                         } // END IF7
                     } // END IF4
                     if(0 == lane_num){
-                        count_and[warp_num] = 1;
+                        count_and[warp_offset] = 1;
                     }
-                    atomicAnd(&count_and[warp_num], count>0);
+                    atomicAnd(&count_and[warp_offset], count>0);
                 } // END WHILE1
             } // END IF2 
 
-            if(warp_gather_base >= n_warp_vals){
+            if(warp_gather_base >= (warp_num + 1) * n_warp_vals){
                 continue;
             }
             int addr = warp_gather_base + lane_num;
@@ -1048,10 +1043,9 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
 
         floatType temp_result;
         temp_result = 0;
-        int valID = warp_num * n_warp_recs + lane_num;
+        int valID = warp_num * n_warp_vals + lane_num;
         int recID = warp_num * n_warp_recs;
         int threshold = cvr->rec_threshold[warp_num];
-        int n_recs = warp_num * n_warp_recs + (cvr->nrow + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
         for(int i = 0; i < (n_warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP; i++){
             int x_addr = cvr->colidx[valID];
             temp_result += cvr->val[valID] * x[x_addr];
