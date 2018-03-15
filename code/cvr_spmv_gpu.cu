@@ -40,7 +40,7 @@
 
 #define THREADS_PER_WARP 32
 
-//#define DOUBLE
+#define DOUBLE
 //#define SM_60
 
 #ifdef DOUBLE
@@ -119,7 +119,7 @@ inline int func_cmp(const void *a, const void *b){
 }
 
 // auxiliary function to get row number, binary search
-__device__ int func_get_row(int valID, csr_t *csr){
+__device__ __inline__ int func_get_row(int valID, csr_t *csr){
     int start = 0, end = csr->nrow;
     int mid = (start + end) / 2;
     while(start <= end){
@@ -140,7 +140,7 @@ __device__ int func_get_row(int valID, csr_t *csr){
 }
 
 // auxiliary function to implement atomic add, GPUs whose compute capability is lower than 6.0 do not support atomic add for double variables
-__device__ floatType floatTypeAtomicAdd(floatType *address, floatType val){
+__device__ __inline__ floatType floatTypeAtomicAdd(floatType *address, floatType val){
     #ifdef SM_60
     return atomicAdd(address, val);
     #else
@@ -182,10 +182,10 @@ int read_matrix(csr_t *csr, char *filename);
 // CSR format -> CVR format
 int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps);
 // CVR format SpMV, y = y + M * x
-int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr);
+int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *csr);
 
 __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr);
-__global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr);
+__global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr);
 
 // however, in this implementation, only one dimension is used for intuition
 int griddim[3] = {1, 1, 1};
@@ -240,7 +240,7 @@ int main(int argc, char **argv){
 
 
     /****  prepare device_csr  ****/
-    printf("Preparing device_csr...\n");
+//    printf("Preparing device_csr...\n");
 
     csr_t *d_csr = NULL, temp_csr;
     //allocate device global memory
@@ -260,57 +260,12 @@ int main(int argc, char **argv){
 
     CHECK(cudaMemcpy(d_csr, &temp_csr, sizeof(csr_t), cudaMemcpyHostToDevice));
 
-    printf("OK!\n\n");
+//    printf("OK!\n\n");
     /****  \prepare device_csr  ****/
 
 
-    /****  prepare device_cvr  ****/
-    printf("Preparing device_cvr...\n");
-
-    cvr_t *d_cvr = NULL, temp_cvr;
-    //cvr structure is dependent on matrix and runtime configuration
-    /*
-    **  n_blocks: total number of blocks in this grid
-    **  threads_per_block: number of threads in a block
-    **  n_threads: total number of threads in this grid
-    **  n_warps: total number of warps in this grid
-    **  n_warp_nnz: average[warp_num] number of non-zeros dealed by one warp
-    **  n_warp_vals: upper bond of number of non-zeros dealed by one warp, aligned
-    **  n_warp_recs: upper bond of records needed by one warp, aligned
-    */
-    int n_blocks = griddim[0] * griddim[1] * griddim[2];
-    int threads_per_block = blockdim[0] * blockdim[1] * blockdim[2];
-    int n_threads = n_blocks * threads_per_block;
-
-    int n_warps = (n_threads + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
-    int n_warp_nnz = h_csr->nnz / n_warps;
-    int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-    int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
-
-    //allocate device global memory
-    CHECK(cudaMalloc(&d_cvr, sizeof(cvr_t)));
-
-    temp_cvr.ncol = h_csr->ncol;
-    temp_cvr.nrow = h_csr->nrow;
-    temp_cvr.nnz = h_csr->nnz;
-    CHECK(cudaMalloc(&temp_cvr.val, n_warps * n_warp_vals * sizeof(floatType)));
-    CHECK(cudaMalloc(&temp_cvr.colidx, n_warps * n_warp_vals * sizeof(int)));
-    CHECK(cudaMalloc(&temp_cvr.rec, n_warps * n_warp_recs * sizeof(record_t)));
-    CHECK(cudaMalloc(&temp_cvr.rec_threshold, n_warps * sizeof(int)));
-    CHECK(cudaMalloc(&temp_cvr.threshold_detail, n_threads * sizeof(int)));
-    CHECK(cudaMalloc(&temp_cvr.tail, n_threads * sizeof(int)));
-
-    //initialize
-    CHECK(cudaMemset(temp_cvr.rec, 0, n_warps * n_warp_recs * sizeof(record_t)));
-
-    CHECK(cudaMemcpy(d_cvr, &temp_cvr, sizeof(cvr_t), cudaMemcpyHostToDevice));
-
-    printf("OK!\n\n");
-    /****  \prepare device_cvr  ****/
-
-
     /****  prepare host_x, device_x, host_y, device_y and verify_y  ****/
-    printf("Preparing vector x and y...\n");
+//    printf("Preparing vector x and y...\n");
 
     //allocate memory
     floatType *h_x = (floatType *)malloc(h_csr->ncol * sizeof(floatType));
@@ -331,31 +286,84 @@ int main(int argc, char **argv){
     CHECK(cudaMemset(d_y, 0, h_csr->nrow * sizeof(floatType)));
     memset(y_verify, 0, h_csr->nrow * sizeof(floatType));
 
-    printf("OK!\n\n");
+//    printf("OK!\n\n");
     /****  \prepare host_x, device_x, host_y, device_y and verify_y  ****/
+
+    struct timeval tv1, tv2;
+    double tv_diff1, tv_diff2;
+    gettimeofday(&tv1, NULL);
+
+    /****  prepare device_cvr  ****/
+//    printf("Preparing device_cvr...\n");
+
+    cvr_t *d_cvr = NULL, temp_cvr;
+    //cvr structure is dependent on matrix and runtime configuration
+    /*
+    **  n_blocks: total number of blocks in this grid
+    **  threads_per_block: number of threads in a block
+    **  n_threads: total number of threads in this grid
+    **  n_warps: total number of warps in this grid
+    **  n_warp_nnz: average number of non-zeros dealed by one warp
+    **  n_warp_vals: upper bond of number of non-zeros dealed by one warp, aligned
+    **  n_warp_recs: upper bond of records needed by one warp, aligned
+    */
+    int n_blocks = griddim[0] * griddim[1] * griddim[2];
+    int threads_per_block = blockdim[0] * blockdim[1] * blockdim[2];
+    int n_threads = n_blocks * threads_per_block;
+
+    int n_warps = (n_threads + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+    int n_warp_nnz = h_csr->nnz / n_warps;
+    int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+    int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+
+    int warps_per_block = threads_per_block / THREADS_PER_WARP;
+
+    //allocate device global memory
+    CHECK(cudaMalloc(&d_cvr, sizeof(cvr_t)));
+
+    temp_cvr.ncol = h_csr->ncol;
+    temp_cvr.nrow = h_csr->nrow;
+    temp_cvr.nnz = h_csr->nnz;
+    CHECK(cudaMalloc(&temp_cvr.val, n_warps * n_warp_vals * sizeof(floatType)));
+    CHECK(cudaMalloc(&temp_cvr.colidx, n_warps * n_warp_vals * sizeof(int)));
+    CHECK(cudaMalloc(&temp_cvr.rec, n_warps * n_warp_recs * sizeof(record_t)));
+    CHECK(cudaMalloc(&temp_cvr.rec_threshold, n_warps * sizeof(int)));
+    CHECK(cudaMalloc(&temp_cvr.threshold_detail, n_threads * sizeof(int)));
+    CHECK(cudaMalloc(&temp_cvr.tail, n_threads * sizeof(int)));
+
+    //initialize
+    CHECK(cudaMemset(temp_cvr.rec, 0, n_warps * n_warp_recs * sizeof(record_t)));
+
+    CHECK(cudaMemcpy(d_cvr, &temp_cvr, sizeof(cvr_t), cudaMemcpyHostToDevice));
+
+//    printf("OK!\n\n");
+    /****  \prepare device_cvr  ****/
 
 
     /****  launch kernels  ****/
-
-//    struct timeval tv1, tv2;
-//    long tv_diff1, tv_diff2;
-//    gettimeofday(&tv1, NULL);
-
     // PREPROCESS
-    if(preprocess(d_cvr, d_csr, n_warps)){
+    if(preprocess(d_cvr, d_csr, warps_per_block)){
         printf("ERROR occured in function preprocess()\n");
         return ERROR;
     }
-    
+
+    gettimeofday(&tv2, NULL);
+    tv_diff1 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+    printf("preprocess time: %lfms\n", tv_diff1/1000.0);
+
+
+
+    gettimeofday(&tv1, NULL);
+
     // SPMV KERNEL
-    if(spmv(d_y, d_x, d_cvr)){
+    if(spmv(d_y, d_x, d_cvr, d_csr)){
         printf("ERROR occured in function spmv()\n");
         return ERROR;
     }
 
-//    gettimeofday(&tv2, NULL);
-//    tv_diff1 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
-//    printf("cvr time(usec): %ld\n", tv_diff1);
+    gettimeofday(&tv2, NULL);
+    tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+    printf("spmv time: %lfms\n", tv_diff2/n_iterations/1000.0);
 
     /****  \launch kernels  ****/
 
@@ -390,10 +398,10 @@ int main(int argc, char **argv){
 
     /****  compute y_verify using csr spmv  ****/
 
-//    gettimeofday(&tv1, NULL);
+    gettimeofday(&tv1, NULL);
 
     for(int iteration = 0; iteration < n_iterations; iteration++){
-//        #pragma omp parallel for num_threads(omp_get_num_threads())
+        #pragma omp parallel for num_threads(omp_get_num_threads())
         floatType sum;
         for(int i = 0; i < h_csr->nrow; i++){
             sum = 0;
@@ -405,9 +413,9 @@ int main(int argc, char **argv){
         }
     }
 
-//    gettimeofday(&tv2, NULL);
-//    tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
-//    printf("csr time(usec): %ld\n", tv_diff2);
+    gettimeofday(&tv2, NULL);
+    tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+    printf("cpu_spmv time: %lfms\n", tv_diff2/1000.0);
 
     /****  \compute y_verify using csr spmv  ****/
 
@@ -422,9 +430,9 @@ int main(int argc, char **argv){
             y2 += y_verify[i];
             count++;
             #ifdef DOUBLE
-            printf("y[%d] should be %lf, but the result is %lf\n", i, y_verify[i], h_y[i]);
+//            printf("y[%d] should be %lf, but the result is %lf\n", i, y_verify[i], h_y[i]);
             #else
-            printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], h_y[i]);    
+//            printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], h_y[i]);    
             #endif
         }
 //        if(count > 10){
@@ -476,7 +484,7 @@ int read_matrix(csr_t *csr, char *filename){
         return ERROR;
     }
     
-    printf("Reading matrix...\n");
+//    printf("Reading matrix...\n");
 
     char buffer[1024];
     char id[FIELD_LENGTH], object[FIELD_LENGTH], format[FIELD_LENGTH], field[FIELD_LENGTH], symmetry[FIELD_LENGTH];
@@ -609,15 +617,15 @@ int read_matrix(csr_t *csr, char *filename){
         printf("ERROR: *** too many matrix elements occered ***\n");
         return ERROR;
     }
-    printf("\nMatrix is in coordinate format now\n");
+//    printf("\nMatrix is in coordinate format now\n");
 
-    printf("\nMatrix Information:\n");
+    printf("Matrix Information:\n");
     printf("Number of rows      : %d\n", coo.nrow);
     printf("Number of columns   : %d\n", coo.ncol);
     printf("Number of non-zeros : %d\n\n", coo.nnz);
 
     //COO -> CSR
-    printf("Coverting to CSR format...\n");
+//    printf("Coverting to CSR format...\n");
 
     csr->ncol = coo.ncol;
     csr->nrow = coo.nrow;
@@ -643,7 +651,7 @@ int read_matrix(csr_t *csr, char *filename){
     while(r < csr->nrow){
         csr->row_ptr[++r] = i;
     }
-    printf("OK!\n\n");
+//    printf("OK!\n\n");
 
     free(coo.triple);
 
@@ -659,17 +667,17 @@ int read_matrix(csr_t *csr, char *filename){
 **     csr_t *d_csr       initialized csr_t pointer(device)
 **     int n_warps        number of warps, used to allocate shared memory
 */
-int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps){
-    printf("Preprocess start.\n");
+int preprocess(cvr_t *d_cvr, csr_t *d_csr, int warps_per_block){
+//    printf("Preprocess start.\n");
 
     dim3 grid(griddim[0], griddim[1], griddim[2]);
     dim3 block(blockdim[0], blockdim[1], blockdim[2]);
 
-    preprocess_kernel<<<grid, block, 6*n_warps*sizeof(int)>>>(d_cvr, d_csr);
+    preprocess_kernel<<<grid, block, 6*warps_per_block*sizeof(int)>>>(d_cvr, d_csr);
     CHECK(cudaGetLastError());
-    cudaDeviceSynchronize();
+    CHECK(cudaDeviceSynchronize());
 
-    printf("OK!\n\n");
+//    printf("OK!\n\n");
 
     return OK;
 }
@@ -683,8 +691,8 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps){
 **     floatType *d_x     initialized pointer(device) to store vector x
 **     cvr_t *d_cvr       allocated cvr_t pointer(device)
 */
-int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr){
-    printf("Sparse Matrix-Vector multiply start.\n");
+int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr){
+//    printf("Sparse Matrix-Vector multiply start.\n");
 
     dim3 grid(griddim[0], griddim[1], griddim[2]);
     dim3 block(blockdim[0], blockdim[1], blockdim[2]);
@@ -692,12 +700,12 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr){
     int iteration;
     //FOR1
     for(iteration = 0; iteration < n_iterations; iteration++){
-        spmv_kernel<<<grid, block>>>(d_y, d_x, d_cvr);
+        spmv_kernel<<<grid, block>>>(d_y, d_x, d_cvr, d_csr);
         CHECK(cudaGetLastError());
-        cudaDeviceSynchronize();
+        CHECK(cudaDeviceSynchronize());
     } //ENDFOR1: iteration
 
-    printf("OK!\n");
+//    printf("OK!\n");
 
     return OK;
 }
@@ -706,7 +714,6 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr){
 
 __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
     extern __shared__ int var_ptr[];
-    // general case
     /* 
     ** Basic information of block and thread:
     **   block_num:         current block id
@@ -719,6 +726,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
     **   n_warps:           number of warps in a grid
     **   lane_num:          current thread id in this warp
     */
+    // general case
     //int block_num = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
     //int thread_offset = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
     //int threads_per_block = blockDim.x * blockDim.y * blockDim.z;
@@ -735,6 +743,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
     int warp_num = thread_num / THREADS_PER_WARP;
     int warp_offset = thread_offset / THREADS_PER_WARP;
     int n_warps = (n_blocks * threads_per_block + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+    int warps_per_block = threads_per_block / THREADS_PER_WARP;
     int lane_num = thread_num % THREADS_PER_WARP;
 
     /*
@@ -742,22 +751,22 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
     **   warp_start/warp_end:         first/last non-zero's id in this warp
     **   warp_nnz:                     number of non-zeros in this warp
     **   warp_start_row/warp_end_row: first/last non-zero's row id in this warp
-    **   nnz_per_warp:                 average number of non-zeros in a warp
+    **   n_warp_nnz:                 average number of non-zeros in a warp
     **   change_warp_nnz:              first change_warp_nnz warps have one more non-zeros than others
     */
     int warp_start, warp_end, warp_nnz;
     int warp_start_row, warp_end_row;
 
-    int nnz_per_warp = csr->nnz / n_warps;
+    int n_warp_nnz = csr->nnz / n_warps;
     int change_warp_nnz = csr->nnz % n_warps;
 
     // information about row range and non-zeros in this warp
     if(warp_num < change_warp_nnz){
-        warp_start = warp_num * nnz_per_warp + warp_num * 1;
-        warp_end = (warp_num + 1) * nnz_per_warp + (warp_num + 1) * 1 - 1;
+        warp_start = warp_num * n_warp_nnz + warp_num * 1;
+        warp_end = (warp_num + 1) * n_warp_nnz + (warp_num + 1) * 1 - 1;
     }else{
-        warp_start = warp_num * nnz_per_warp + change_warp_nnz * 1;
-        warp_end = (warp_num + 1) * nnz_per_warp + change_warp_nnz * 1 - 1;
+        warp_start = warp_num * n_warp_nnz + change_warp_nnz * 1;
+        warp_end = (warp_num + 1) * n_warp_nnz + change_warp_nnz * 1 - 1;
     }
     warp_nnz = warp_end - warp_start + 1;
 
@@ -768,11 +777,9 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
         warp_end_row = func_get_row(warp_end, csr);
 
         /*
-        **   n_warp_nnz: average[warp_num] number of non-zeros in a warp
         **   n_warp_vals: upperbond of number of values needed to store, related to memory space allocation
         **   n_warp_recs: upperbond of number of records needed to store, related to memory space allocation
         */
-        int n_warp_nnz = csr->nnz / n_warps;
         int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
         int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
 
@@ -796,11 +803,11 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
         // initialize
         if(0 == thread_offset){
             cur_row = var_ptr;
-            cur_rec = &var_ptr[n_warps];
-            count_and = &var_ptr[2*n_warps];
-            average = &var_ptr[3*n_warps];
-            candidate = &var_ptr[4*n_warps];
-            selected = &var_ptr[5*n_warps];
+            cur_rec = &var_ptr[warps_per_block];
+            count_and = &var_ptr[2*warps_per_block];
+            average = &var_ptr[3*warps_per_block];
+            candidate = &var_ptr[4*warps_per_block];
+            selected = &var_ptr[5*warps_per_block];
         }
         __syncthreads();
 
@@ -1066,7 +1073,7 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 }
 
 
-__global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
+__global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
 
     // these variables are the same as preprocess_kernel
     // warp_offset is useless here because it's used to access shared memory
@@ -1077,28 +1084,30 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
     int n_blocks = gridDim.x;
 
     int warp_num = thread_num / THREADS_PER_WARP;
-    int warp_offset = thread_offset / THREADS_PER_WARP;
+//    int warp_offset = thread_offset / THREADS_PER_WARP;
     int n_warps = (n_blocks * threads_per_block + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
     int lane_num = thread_num % THREADS_PER_WARP;
 
     int warp_start, warp_end, warp_nnz;
 
-    int nnz_per_warp = cvr->nnz / n_warps;
+    int n_warp_nnz = cvr->nnz / n_warps;
     int change_warp_nnz = cvr->nnz % n_warps;
 
     if(warp_num < change_warp_nnz){
-        warp_start = warp_num * nnz_per_warp + warp_num * 1;
-        warp_end = (warp_num + 1) * nnz_per_warp + (warp_num + 1) * 1 - 1;
+        warp_start = warp_num * n_warp_nnz + warp_num * 1;
+        warp_end = (warp_num + 1) * n_warp_nnz + (warp_num + 1) * 1 - 1;
     }else{
-        warp_start = warp_num * nnz_per_warp + change_warp_nnz * 1;
-        warp_end = (warp_num + 1) * nnz_per_warp + change_warp_nnz * 1 - 1;
+        warp_start = warp_num * n_warp_nnz + change_warp_nnz * 1;
+        warp_end = (warp_num + 1) * n_warp_nnz + change_warp_nnz * 1 - 1;
     }
     warp_nnz = warp_end - warp_start + 1;
 
     // IF0: this warp has at least one non-zero to deal with 
     // ELSE0 is empty
     if(warp_nnz > 0){
-        int n_warp_nnz = cvr->nnz / n_warps;
+        int warp_start_row = func_get_row(warp_start, csr);
+        int warp_end_row = func_get_row(warp_end, csr);
+
         int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
         int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
         
@@ -1135,7 +1144,11 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr){
                 while(rec_pos / THREADS_PER_WARP == i){
                     // atomic write back to y
                     if(lane_num == offset){
-                        floatTypeAtomicAdd(&y[writeback], temp_result);
+                        if(writeback == warp_start_row){
+                            floatTypeAtomicAdd(&y[writeback], temp_result);
+                        }else{
+                            y[writeback] += temp_result;
+                        }
                         temp_result = 0;
                     }
 
