@@ -401,10 +401,9 @@ int main(int argc, char **argv){
     gettimeofday(&tv1, NULL);
 
     for(int iteration = 0; iteration < n_iterations; iteration++){
-        #pragma omp parallel for num_threads(omp_get_num_threads())
-        floatType sum;
+        #pragma omp parallel for num_threads(12)
         for(int i = 0; i < h_csr->nrow; i++){
-            sum = 0;
+            floatType sum = 0;
             for(int j = h_csr->row_ptr[i]; j < h_csr->row_ptr[i+1]; j++){
                 sum += h_csr->val[j] * h_x[h_csr->col_idx[j]];
             }
@@ -702,9 +701,9 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr){
     for(iteration = 0; iteration < n_iterations; iteration++){
         spmv_kernel<<<grid, block>>>(d_y, d_x, d_cvr, d_csr);
         CHECK(cudaGetLastError());
-        CHECK(cudaDeviceSynchronize());
+//        CHECK(cudaDeviceSynchronize());
     } //ENDFOR1: iteration
-
+    CHECK(cudaDeviceSynchronize());
 //    printf("OK!\n");
 
     return OK;
