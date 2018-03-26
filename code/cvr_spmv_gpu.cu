@@ -8,7 +8,7 @@
 **  (e.g. CUDA x.x and compute capability x.x)
 **
 ** run:
-**      $ ./cvr_spmv_gpu data.txt [blocks threads [iterations]]
+**      $ ./cvr_spmv_gpu data.txt [blocks threads [n_iterations]]
 ** data.txt: matrix market format input file
 ** default parameters: 1 block, 32 threads per block, 1 iteration
 ** 
@@ -16,8 +16,6 @@
 **  If your file is 1-based, please change "#define COO_BASE 0" to 1.
 ** Default float type: single-precision(float).
 **  If you need double-precision(double) type, please uncomment "#define DOUBLE".
-** Default compute capability: 5.2.(compile option -arch=sm_52)
-**  If your GPU has a compute capability equal to or higher than 6.0, please uncomment "#define SM_60".
 **
 ****************************************************/
 
@@ -40,8 +38,9 @@
 
 #define THREADS_PER_WARP 32
 
+//#define TEXTURE
+
 #define DOUBLE
-//#define SM_60
 
 #ifdef DOUBLE
 #define floatType double
@@ -119,7 +118,7 @@ inline int func_cmp(const void *a, const void *b){
 }
 
 // auxiliary function to get row number, binary search
-__device__ __inline__ int func_get_row(int valID, csr_t *csr){
+__forceinline__ __device__ int func_get_row(int valID, csr_t *csr){
     int start = 0, end = csr->nrow;
     int mid = (start + end) / 2;
     while(start <= end){
@@ -140,8 +139,8 @@ __device__ __inline__ int func_get_row(int valID, csr_t *csr){
 }
 
 // auxiliary function to implement atomic add, GPUs whose compute capability is lower than 6.0 do not support atomic add for double variables
-__device__ __inline__ floatType floatTypeAtomicAdd(floatType *address, floatType val){
-    #ifdef SM_60
+__forceinline__ __device__ floatType floatTypeAtomicAdd(floatType *address, floatType val){
+    #if __CUDA_ARCH__ >= 600
     return atomicAdd(address, val);
     #else
     #ifdef DOUBLE
@@ -182,10 +181,18 @@ int read_matrix(csr_t *csr, char *filename);
 // CSR format -> CVR format
 int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps);
 // CVR format SpMV, y = y + M * x
-int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *csr);
+int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *csr, int threads_per_block);
 
-__global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr);
-__global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr);
+__global__ void preprocess_kernel(cvr_t * __restrict__ cvr, csr_t * __restrict__ csr);
+__global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __restrict__ x, cvr_t * __restrict__ cvr, csr_t * __restrict__ csr, const int n_iterations);
+
+#ifdef TEXTURE
+#ifdef DOUBLE
+texture<int2, 1, cudaReadModeElementType> x_texRef;
+#else
+texture<floatType, 1, cudaReadModeElementType> x_texRef;
+#endif
+#endif
 
 // however, in this implementation, only one dimension is used for intuition
 int griddim[3] = {1, 1, 1};
@@ -216,10 +223,11 @@ int main(int argc, char **argv){
 
     /****  basic runtime information  ****/
 
-    printf("Input file: %s\n", filename);
-    printf("Grid dimension: (%d, %d, %d)\n", griddim[0], griddim[1], griddim[2]);
-    printf("Block dimension: (%d, %d, %d)\n", blockdim[0], blockdim[1], blockdim[2]);
-    printf("Number of iterations: %d\n\n", n_iterations);
+    //printf("Input file: %s\n", filename);
+    //printf("Grid dimension: (%d, %d, %d)\n", griddim[0], griddim[1], griddim[2]);
+    //printf("Block dimension: (%d, %d, %d)\n", blockdim[0], blockdim[1], blockdim[2]);
+    //printf("Number of iterations: %d\n\n", n_iterations);
+    printf("input:%s, <<<%d,%d>>>, interations:%d\n", filename, griddim[0], blockdim[0], n_iterations);
 
     /****  \basic runtime information  ****/
 
@@ -285,6 +293,11 @@ int main(int argc, char **argv){
     memset(h_y, 0, h_csr->nrow * sizeof(floatType));
     CHECK(cudaMemset(d_y, 0, h_csr->nrow * sizeof(floatType)));
     memset(y_verify, 0, h_csr->nrow * sizeof(floatType));
+
+    #ifdef TEXTURE
+    //bind x vector to texture
+    CHECK(cudaBindTexture(0, x_texRef, d_x));
+    #endif
 
 //    printf("OK!\n\n");
     /****  \prepare host_x, device_x, host_y, device_y and verify_y  ****/
@@ -356,7 +369,7 @@ int main(int argc, char **argv){
     gettimeofday(&tv1, NULL);
 
     // SPMV KERNEL
-    if(spmv(d_y, d_x, d_cvr, d_csr)){
+    if(spmv(d_y, d_x, d_cvr, d_csr, threads_per_block)){
         printf("ERROR occured in function spmv()\n");
         return ERROR;
     }
@@ -376,7 +389,11 @@ int main(int argc, char **argv){
 
 
     /****  free device memory  ****/
-
+    #ifdef TEXTURE
+    //unbind x vector to texture
+    CHECK(cudaUnbindTexture(x_texRef));
+    #endif
+    
     CHECK(cudaFree(d_x));
     CHECK(cudaFree(d_y));
 
@@ -400,17 +417,20 @@ int main(int argc, char **argv){
 
     gettimeofday(&tv1, NULL);
 
-    for(int iteration = 0; iteration < n_iterations; iteration++){
-        #pragma omp parallel for num_threads(12)
+    //for(int iteration = 0; iteration < n_iterations; iteration++){
+        #pragma omp parallel for num_threads(24)
         for(int i = 0; i < h_csr->nrow; i++){
             floatType sum = 0;
             for(int j = h_csr->row_ptr[i]; j < h_csr->row_ptr[i+1]; j++){
+              #pragma unroll
+              for(int iteration = 0; iteration < n_iterations; iteration++){
                 sum += h_csr->val[j] * h_x[h_csr->col_idx[j]];
+              }
             }
             y_verify[i] += sum;
 //            printf("y[%d]=%f, y_v[%d]=%f\n", i, h_y[i], i, y_verify[i]);
         }
-    }
+    //}
 
     gettimeofday(&tv2, NULL);
     tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
@@ -429,18 +449,18 @@ int main(int argc, char **argv){
             y2 += y_verify[i];
             count++;
             #ifdef DOUBLE
-//            printf("y[%d] should be %lf, but the result is %lf\n", i, y_verify[i], h_y[i]);
+            printf("y[%d] should be %lf, but the result is %lf\n", i, y_verify[i], h_y[i]);
             #else
 //            printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], h_y[i]);    
             #endif
         }
-//        if(count > 10){
-//            break;
-//        }
+        if(count > 10){
+            break;
+        }
     }
 
     if(0 == count){
-        printf("Correct\n");
+        printf("Correct\n\n");
     }else{
         #ifdef DOUBLE
         printf("count=%d, y_sum=%lf, y_v_sum=%lf\n", count, y1, y2);
@@ -618,10 +638,11 @@ int read_matrix(csr_t *csr, char *filename){
     }
 //    printf("\nMatrix is in coordinate format now\n");
 
-    printf("Matrix Information:\n");
-    printf("Number of rows      : %d\n", coo.nrow);
-    printf("Number of columns   : %d\n", coo.ncol);
-    printf("Number of non-zeros : %d\n\n", coo.nnz);
+    //printf("Matrix Information:\n");
+    //printf("Number of rows      : %d\n", coo.nrow);
+    //printf("Number of columns   : %d\n", coo.ncol);
+    //printf("Number of non-zeros : %d\n\n", coo.nnz);
+    printf("matrix:%dx%d, %d non-zeros\n", coo.nrow, coo.ncol, coo.nnz);
 
     //COO -> CSR
 //    printf("Coverting to CSR format...\n");
@@ -672,6 +693,10 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int warps_per_block){
     dim3 grid(griddim[0], griddim[1], griddim[2]);
     dim3 block(blockdim[0], blockdim[1], blockdim[2]);
 
+//    int exe_config[2];
+//    cudaOccupancyMaxPotentialBlockSize(&exe_config[0], &exe_config[1], (void *)preprocess_kernel, 6*warps_per_block*sizeof(int));
+//    printf("runtime API suggests: %d blocks per grid, %d threads per block for preprocess . size of shared memory:%d\n", exe_config[0], exe_config[1], 6*warps_per_block*sizeof(int));
+    
     preprocess_kernel<<<grid, block, 6*warps_per_block*sizeof(int)>>>(d_cvr, d_csr);
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
@@ -690,19 +715,23 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int warps_per_block){
 **     floatType *d_x     initialized pointer(device) to store vector x
 **     cvr_t *d_cvr       allocated cvr_t pointer(device)
 */
-int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr){
+int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, int threads_per_block){
 //    printf("Sparse Matrix-Vector multiply start.\n");
 
     dim3 grid(griddim[0], griddim[1], griddim[2]);
     dim3 block(blockdim[0], blockdim[1], blockdim[2]);
 
-    int iteration;
-    //FOR1
-    for(iteration = 0; iteration < n_iterations; iteration++){
-        spmv_kernel<<<grid, block>>>(d_y, d_x, d_cvr, d_csr);
+//    int exe_config[2];
+//    cudaOccupancyMaxPotentialBlockSize(&exe_config[0], &exe_config[1], (void *)spmv_kernel, threads_per_block*sizeof(floatType));
+//    printf("runtime API suggests: %d blocks per grid, %d threads per block for spmv. size of shared memory:%d\n", exe_config[0], exe_config[1], threads_per_block*sizeof(floatType));
+    
+    //int iteration;
+    ////FOR1
+    //for(iteration = 0; iteration < n_iterations; iteration++){
+        spmv_kernel<<<grid, block, threads_per_block*sizeof(floatType)>>>(d_y, d_x, d_cvr, d_csr, n_iterations);
         CHECK(cudaGetLastError());
 //        CHECK(cudaDeviceSynchronize());
-    } //ENDFOR1: iteration
+    //} //ENDFOR1: iteration
     CHECK(cudaDeviceSynchronize());
 //    printf("OK!\n");
 
@@ -711,7 +740,7 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr){
 
 
 
-__global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
+__global__ void preprocess_kernel(cvr_t * __restrict__ cvr, csr_t * __restrict__ csr){
     extern __shared__ int var_ptr[];
     /* 
     ** Basic information of block and thread:
@@ -798,7 +827,9 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
         **   average, candidate, selected: used for tracker stealing
         */
         int valID, rowID, count, recID, warp_gather_base = warp_num * n_warp_vals, shfl_temp;
+        //volatile __shared__ int *cur_row, *cur_rec, *count_and, *average, *candidate, *selected;
         __shared__ int *cur_row, *cur_rec, *count_and, *average, *candidate, *selected;
+
         // initialize
         if(0 == thread_offset){
             cur_row = var_ptr;
@@ -808,6 +839,8 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
             candidate = &var_ptr[4*warps_per_block];
             selected = &var_ptr[5*warps_per_block];
         }
+
+        //__threadfence_block();
         __syncthreads();
 
         if(0 == lane_num){
@@ -1072,7 +1105,8 @@ __global__ void preprocess_kernel(cvr_t *cvr, csr_t *csr){
 }
 
 
-__global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
+__global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __restrict__ x, cvr_t * __restrict__ cvr, csr_t * __restrict__ csr, const int n_iterations){
+    //extern __shared__ floatType shared_y[];
 
     // these variables are the same as preprocess_kernel
     // warp_offset is useless here because it's used to access shared memory
@@ -1083,7 +1117,7 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
     int n_blocks = gridDim.x;
 
     int warp_num = thread_num / THREADS_PER_WARP;
-//    int warp_offset = thread_offset / THREADS_PER_WARP;
+    //int warp_offset = thread_offset / THREADS_PER_WARP;
     int n_warps = (n_blocks * threads_per_block + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
     int lane_num = thread_num % THREADS_PER_WARP;
 
@@ -1109,7 +1143,19 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
 
         int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
         int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+
+        //floatType *shared_y = &shared_var[warp_offset * n_warp_recs];
+        //int init_smem = lane_num;
+        //while(init_smem < n_warp_recs){
+        //    shared_y[init_smem] = 0;
+        //    init_smem += THREADS_PER_WARP;
+        //}
+        //__syncthreads();
         
+      ////FORi
+      //int iteration;
+      //#pragma unroll
+      //for(iteration = 0; iteration < n_iterations; iteration++){
         /*
         ** temp_result: temp result of current lane, write to y[] after finishing one row
         ** valID: offset of cvr->val and cvr->colidx
@@ -1122,6 +1168,7 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
         int threshold = cvr->rec_threshold[warp_num];
 
         // FOR0
+        #pragma unroll
         for(int i = 0; i < (n_warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP; i++){
             /*
             ** x_addr: offset of vector x
@@ -1132,7 +1179,32 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
             int x_addr = cvr->colidx[valID];
 
             // ******** this is the core multiplication!!!!!!!!! ********
-            temp_result += cvr->val[valID] * x[x_addr];
+            //temp_result += cvr->val[valID] * __ldg(&x[x_addr]);
+ 
+            #ifdef TEXTURE
+            
+            #ifdef DOUBLE
+            int2 x_trans = tex1Dfetch(x_texRef, x_addr);
+            floatType x_val = __hiloint2double(x_trans.y, x_trans.x);
+            #else
+            floatType x_val = tex1Dfetch(x_texRef, x_addr);
+            #endif
+
+            int iteration;
+            #pragma unroll
+            for(iteration = 0; iteration < n_iterations; iteration++){
+                temp_result += cvr->val[valID] * x_val;
+            }
+            
+            #else
+
+            int iteration;
+            #pragma unroll
+            for(iteration = 0; iteration < n_iterations; iteration++){
+                temp_result += cvr->val[valID] * x[x_addr];
+            }
+            
+            #endif
 
             int rec_pos = cvr->rec[recID].pos;
             int writeback = cvr->rec[recID].wb;
@@ -1143,6 +1215,11 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
                 while(rec_pos / THREADS_PER_WARP == i){
                     // atomic write back to y
                     if(lane_num == offset){
+                        //if(writeback == warp_start_row){
+                        //    floatTypeAtomicAdd(&shared_y[0], temp_result);
+                        //}else{
+                        //    shared_y[writeback-warp_start_row] += temp_result;
+                        //}
                         if(writeback == warp_start_row){
                             floatTypeAtomicAdd(&y[writeback], temp_result);
                         }else{
@@ -1164,15 +1241,24 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
                 while(rec_pos / THREADS_PER_WARP == i){
                     if(lane_num == offset){
                         if(0 == flag){
-                            floatTypeAtomicAdd(&y[writeback], temp_result);
-                            temp_result = 0;
+                            //if(writeback == warp_start_row){
+                            //    floatTypeAtomicAdd(&shared_y[0], temp_result);
+                            //}else{
+                            //    shared_y[writeback-warp_start_row] += temp_result;
+                            //}
+                            if(writeback == warp_start_row){
+                                floatTypeAtomicAdd(&y[writeback], temp_result);
+                            }else{
+                                y[writeback] += temp_result;
+                            }
                         }else{
                             writeback = cvr->tail[writeback];
                             if(-1 != writeback){
+                                //floatTypeAtomicAdd(&shared_y[writeback-warp_start_row], temp_result);
                                 floatTypeAtomicAdd(&y[writeback], temp_result);
                             }
-                            temp_result = 0;
                         }
+                        temp_result = 0;
                     }
 
                     recID++;
@@ -1191,6 +1277,7 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
                     if(lane_num == offset){
                         writeback = cvr->tail[writeback];
                         if(-1 != writeback){
+                            //floatTypeAtomicAdd(&shared_y[writeback-warp_start_row], temp_result);
                             floatTypeAtomicAdd(&y[writeback], temp_result);
                         }
                         temp_result = 0;
@@ -1210,6 +1297,16 @@ __global__ void spmv_kernel(floatType *y, floatType *x, cvr_t *cvr, csr_t *csr){
             valID += THREADS_PER_WARP;
         } // END FOR0
 
+      //}// END FORi
+
+      //if(0 == lane_num){
+      //  floatTypeAtomicAdd(&y[warp_start_row], shared_y[0]);
+      //  floatTypeAtomicAdd(&y[warp_end_row], shared_y[warp_end_row-warp_start_row]);
+      //  #pragma unroll
+      //  for(int wb = warp_start_row + 1; wb < warp_end_row; wb++){
+      //      y[wb] += shared_y[wb-warp_start_row];
+      //  }
+      //}
     }// END IF0
 }
 
