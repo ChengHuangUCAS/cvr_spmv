@@ -159,7 +159,7 @@ __forceinline__ __device__ floatType floatTypeAtomicAdd(floatType *address, floa
 
 // auxiliary function to compare result
 inline int func_compare(floatType y, floatType y_verify){
-    if(y - y_verify < -0.0001 || y - y_verify > 0.0001){
+    if(abs(y-y_verify) > abs(0.01*y_verify)){
         return 1;
     }else{
         return 0;
@@ -227,7 +227,7 @@ int main(int argc, char **argv){
     //printf("Grid dimension: (%d, %d, %d)\n", griddim[0], griddim[1], griddim[2]);
     //printf("Block dimension: (%d, %d, %d)\n", blockdim[0], blockdim[1], blockdim[2]);
     //printf("Number of iterations: %d\n\n", n_iterations);
-    printf("input:%s, <<<%d,%d>>>, interations:%d\n", filename, griddim[0], blockdim[0], n_iterations);
+    printf("input:%s, <<<%d,%d>>>, iterations:%d\n", filename, griddim[0], blockdim[0], n_iterations);
 
     /****  \basic runtime information  ****/
 
@@ -454,9 +454,9 @@ int main(int argc, char **argv){
 //            printf("y[%d] should be %f, but the result is %f\n", i, y_verify[i], h_y[i]);    
             #endif
         }
-        if(count > 10){
-            break;
-        }
+//        if(count > 10){
+//            break;
+//        }
     }
 
     if(0 == count){
@@ -693,9 +693,9 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int warps_per_block){
     dim3 grid(griddim[0], griddim[1], griddim[2]);
     dim3 block(blockdim[0], blockdim[1], blockdim[2]);
 
-//    int exe_config[2];
-//    cudaOccupancyMaxPotentialBlockSize(&exe_config[0], &exe_config[1], (void *)preprocess_kernel, 6*warps_per_block*sizeof(int));
-//    printf("runtime API suggests: %d blocks per grid, %d threads per block for preprocess . size of shared memory:%d\n", exe_config[0], exe_config[1], 6*warps_per_block*sizeof(int));
+    //int exe_config[2];
+    //cudaOccupancyMaxPotentialBlockSize(&exe_config[0], &exe_config[1], (void *)preprocess_kernel, 6*warps_per_block*sizeof(int));
+    //printf("runtime API suggests: %d blocks per grid, %d threads per block for preprocess . size of shared memory:%d\n", exe_config[0], exe_config[1], 6*warps_per_block*sizeof(int));
     
     preprocess_kernel<<<grid, block, 6*warps_per_block*sizeof(int)>>>(d_cvr, d_csr);
     CHECK(cudaGetLastError());
@@ -725,13 +725,13 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, int threads
 //    cudaOccupancyMaxPotentialBlockSize(&exe_config[0], &exe_config[1], (void *)spmv_kernel, threads_per_block*sizeof(floatType));
 //    printf("runtime API suggests: %d blocks per grid, %d threads per block for spmv. size of shared memory:%d\n", exe_config[0], exe_config[1], threads_per_block*sizeof(floatType));
     
-    //int iteration;
-    ////FOR1
-    //for(iteration = 0; iteration < n_iterations; iteration++){
-        spmv_kernel<<<grid, block, threads_per_block*sizeof(floatType)>>>(d_y, d_x, d_cvr, d_csr, n_iterations);
+    int iteration;
+    //FOR1
+    for(iteration = 0; iteration < n_iterations; iteration++){
+        spmv_kernel<<<grid, block>>>(d_y, d_x, d_cvr, d_csr, n_iterations);
         CHECK(cudaGetLastError());
 //        CHECK(cudaDeviceSynchronize());
-    //} //ENDFOR1: iteration
+    } //ENDFOR1: iteration
     CHECK(cudaDeviceSynchronize());
 //    printf("OK!\n");
 
@@ -879,19 +879,23 @@ __global__ void preprocess_kernel(cvr_t * __restrict__ cvr, csr_t * __restrict__
 
         // IF1: if the number of rows is less than THREADS_PER_WARP, initialize tail_ptr
         if(cur_row[warp_offset] > warp_end_row){
+            //if(count == 1 && rowID <= warp_end_row){
+            //    cvr->threshold_detail[thread_num] = 0; // these threads can write to rec.wb directly in threshold loop
+            //}
             cvr->tail[thread_num] = rowID;
             if(rowID != -1){
                 rowID = thread_num;
             }
             if(0 == lane_num){
                 cur_row[warp_offset] += THREADS_PER_WARP; // ensure IF4 and IF5(ELSE1) will never be executed
+                cvr->rec_threshold[warp_num] = 0;
             }
         } // END IF1
 
         // FOR1: preprocessing loop
         for(int i = 0; i <= n_warp_vals / THREADS_PER_WARP; i++){
 
-            if(0 == lane_num){
+           if(0 == lane_num){
                 count_and[warp_offset] = 1;
             }
             atomicAnd(&count_and[warp_offset], count>0);
@@ -943,6 +947,7 @@ __global__ void preprocess_kernel(cvr_t * __restrict__ cvr, csr_t * __restrict__
                     if(cur_row[warp_offset] > warp_end_row){
                         // IF6: set rec_threshold, only executed once
                         if(-1 == cvr->rec_threshold[warp_num]){
+                            
                             if(0 == lane_num){
                                 // make sure once IF6 is executed, IF4 will never be executed 
                                 cur_row[warp_offset] += THREADS_PER_WARP;
@@ -1152,10 +1157,6 @@ __global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __rest
         //}
         //__syncthreads();
         
-      ////FORi
-      //int iteration;
-      //#pragma unroll
-      //for(iteration = 0; iteration < n_iterations; iteration++){
         /*
         ** temp_result: temp result of current lane, write to y[] after finishing one row
         ** valID: offset of cvr->val and cvr->colidx
@@ -1190,19 +1191,11 @@ __global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __rest
             floatType x_val = tex1Dfetch(x_texRef, x_addr);
             #endif
 
-            int iteration;
-            #pragma unroll
-            for(iteration = 0; iteration < n_iterations; iteration++){
-                temp_result += cvr->val[valID] * x_val;
-            }
+            temp_result += cvr->val[valID] * x_val;
             
             #else
 
-            int iteration;
-            #pragma unroll
-            for(iteration = 0; iteration < n_iterations; iteration++){
-                temp_result += cvr->val[valID] * x[x_addr];
-            }
+            temp_result += cvr->val[valID] * x[x_addr];
             
             #endif
 
@@ -1223,6 +1216,7 @@ __global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __rest
                         if(writeback == warp_start_row){
                             floatTypeAtomicAdd(&y[writeback], temp_result);
                         }else{
+                            //floatTypeAtomicAdd(&y[writeback], temp_result);
                             y[writeback] += temp_result;
                         }
                         temp_result = 0;
@@ -1249,13 +1243,28 @@ __global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __rest
                             if(writeback == warp_start_row){
                                 floatTypeAtomicAdd(&y[writeback], temp_result);
                             }else{
+                                //floatTypeAtomicAdd(&y[writeback], temp_result);
                                 y[writeback] += temp_result;
                             }
                         }else{
                             writeback = cvr->tail[writeback];
                             if(-1 != writeback){
                                 //floatTypeAtomicAdd(&shared_y[writeback-warp_start_row], temp_result);
-                                floatTypeAtomicAdd(&y[writeback], temp_result);
+                                if(writeback == warp_end_row || writeback == warp_start_row){
+                                    floatTypeAtomicAdd(&y[writeback], temp_result);
+                                }else{
+                                    //floatTypeAtomicAdd(&y[writeback], temp_result);
+                                    y[writeback] += temp_result;
+                                }
+                                //floatTypeAtomicAdd(&shared_y[writeback], temp_result);
+                                //if(writeback == lane_num){
+                                //    if(writeback2 == warp_end_row){
+                                //        floatTypeAtomicAdd(&y[writeback2], shared_y[writeback]);
+                                //    }else{
+                                //        y[writeback2] += shared_y[writeback];
+                                //    }
+                                //    shared_y[writeback] = 0;
+                                //}
                             }
                         }
                         temp_result = 0;
@@ -1278,7 +1287,12 @@ __global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __rest
                         writeback = cvr->tail[writeback];
                         if(-1 != writeback){
                             //floatTypeAtomicAdd(&shared_y[writeback-warp_start_row], temp_result);
-                            floatTypeAtomicAdd(&y[writeback], temp_result);
+                            if(writeback == warp_end_row || writeback == warp_start_row){
+                                floatTypeAtomicAdd(&y[writeback], temp_result);
+                            }else{
+                                //floatTypeAtomicAdd(&y[writeback], temp_result);
+                                y[writeback] += temp_result;
+                            }
                         }
                         temp_result = 0;
                     }
@@ -1297,7 +1311,6 @@ __global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __rest
             valID += THREADS_PER_WARP;
         } // END FOR0
 
-      //}// END FORi
 
       //if(0 == lane_num){
       //  floatTypeAtomicAdd(&y[warp_start_row], shared_y[0]);
