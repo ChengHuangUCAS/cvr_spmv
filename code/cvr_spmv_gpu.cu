@@ -183,8 +183,8 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps);
 // CVR format SpMV, y = y + M * x
 int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *csr, int threads_per_block);
 
-__global__ void preprocess_kernel(cvr_t * __restrict__ cvr, csr_t * __restrict__ csr);
-__global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __restrict__ x, cvr_t * __restrict__ cvr, csr_t * __restrict__ csr, const int n_iterations);
+__global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const __restrict__ csr);
+__global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x, cvr_t * const __restrict__ cvr, csr_t * const __restrict__ csr, const int n_iterations);
 
 #ifdef TEXTURE
 #ifdef DOUBLE
@@ -727,6 +727,7 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, int threads
     
     int iteration;
     //FOR1
+    //#pragma unroll
     for(iteration = 0; iteration < n_iterations; iteration++){
         spmv_kernel<<<grid, block>>>(d_y, d_x, d_cvr, d_csr, n_iterations);
         CHECK(cudaGetLastError());
@@ -740,7 +741,7 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, int threads
 
 
 
-__global__ void preprocess_kernel(cvr_t * __restrict__ cvr, csr_t * __restrict__ csr){
+__global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const __restrict__ csr){
     extern __shared__ int var_ptr[];
     /* 
     ** Basic information of block and thread:
@@ -1110,7 +1111,7 @@ __global__ void preprocess_kernel(cvr_t * __restrict__ cvr, csr_t * __restrict__
 }
 
 
-__global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __restrict__ x, cvr_t * __restrict__ cvr, csr_t * __restrict__ csr, const int n_iterations){
+__global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x, cvr_t * const __restrict__ cvr, csr_t * const __restrict__ csr, const int n_iterations){
     //extern __shared__ floatType shared_y[];
 
     // these variables are the same as preprocess_kernel
@@ -1180,7 +1181,6 @@ __global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __rest
             int x_addr = cvr->colidx[valID];
 
             // ******** this is the core multiplication!!!!!!!!! ********
-            //temp_result += cvr->val[valID] * __ldg(&x[x_addr]);
  
             #ifdef TEXTURE
             
@@ -1195,6 +1195,7 @@ __global__ void spmv_kernel(floatType * __restrict__ y, const floatType * __rest
             
             #else
 
+            //temp_result += __ldg(&cvr->val[valID]) * __ldg(&x[x_addr]);
             temp_result += cvr->val[valID] * x[x_addr];
             
             #endif
