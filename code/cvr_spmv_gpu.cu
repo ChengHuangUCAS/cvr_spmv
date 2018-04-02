@@ -1133,103 +1133,94 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     int n_warps = (gridDim.x * blockDim.x + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
     int laneID = threadID % THREADS_PER_WARP;
 
-    // IF0: this warp has at least one non-zero to deal with 
-    // ELSE0 is empty
-//    if(warp_nnz > 0){
-        int warp_start_row = cvr->warp_start_row[warpID];
+    int warp_start_row = cvr->warp_start_row[warpID];
 
-        //int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-        int n_warp_vals = (cvr->nnz / n_warps + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-        int n_steps = n_warp_vals / THREADS_PER_WARP;
-        int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+    //int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+    int n_warp_vals = (cvr->nnz / n_warps + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+    int n_steps = n_warp_vals / THREADS_PER_WARP;
+    int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
 
-        //floatType *shared_y = &shared_var[warp_offset * n_warp_recs];
-        //int init_smem = laneID;
-        //while(init_smem < n_warp_recs){
-        //    shared_y[init_smem] = 0;
-        //    init_smem += THREADS_PER_WARP;
-        //}
-        //__syncthreads();
+    //floatType *shared_y = &shared_var[warp_offset * n_warp_recs];
+    //int init_smem = laneID;
+    //while(init_smem < n_warp_recs){
+    //    shared_y[init_smem] = 0;
+    //    init_smem += THREADS_PER_WARP;
+    //}
+    //__syncthreads();
         
+    /*
+    ** temp_result: temp result of current lane, write to y[] after finishing one row
+    ** valID: offset of cvr->val and cvr->colidx
+    ** recID: offset of cvr->rec, there is only one recID in one warp
+    ** threshold: store cvr->rec_threshold of current warp
+    */
+    floatType temp_result = 0;
+    int valID = warpID * n_warp_vals + laneID;
+    int recID = warpID * n_warp_recs;
+    int threshold = cvr->rec_threshold[warpID];
+
+    // FOR0
+    #pragma unroll
+    for(int i = 0; i < n_steps; i++){
         /*
-        ** temp_result: temp result of current lane, write to y[] after finishing one row
-        ** valID: offset of cvr->val and cvr->colidx
-        ** recID: offset of cvr->rec, there is only one recID in one warp
-        ** threshold: store cvr->rec_threshold of current warp
+        ** x_addr: offset of vector x
+        ** rec_pos: store cvr->rec.pos, used to calculate offset
+        ** writeback: store cvr->rec.wb, address to write back
+        ** offset: lane number of current record
         */
-        floatType temp_result = 0;
-        int valID = warpID * n_warp_vals + laneID;
-        int recID = warpID * n_warp_recs;
-        int threshold = cvr->rec_threshold[warpID];
+        int x_addr = cvr->colidx[valID];
 
-        // FOR0
-        #pragma unroll
-        for(int i = 0; i < n_steps; i++){
-            /*
-            ** x_addr: offset of vector x
-            ** rec_pos: store cvr->rec.pos, used to calculate offset
-            ** writeback: store cvr->rec.wb, address to write back
-            ** offset: lane number of current record
-            */
-            int x_addr = cvr->colidx[valID];
-
-            // ******** this is the core multiplication!!!!!!!!! ********
+        // ******** this is the core multiplication!!!!!!!!! ********
  
-            #ifdef TEXTURE
+        #ifdef TEXTURE
             
-            #ifdef DOUBLE
-            int2 x_trans = tex1Dfetch(x_texRef, x_addr);
-            floatType x_val = __hiloint2double(x_trans.y, x_trans.x);
-            #else
-            floatType x_val = tex1Dfetch(x_texRef, x_addr);
-            #endif
+        #ifdef DOUBLE
+        int2 x_trans = tex1Dfetch(x_texRef, x_addr);
+        floatType x_val = __hiloint2double(x_trans.y, x_trans.x);
+        #else
+        floatType x_val = tex1Dfetch(x_texRef, x_addr);
+        #endif
 
-            temp_result += cvr->val[valID] * x_val;
+        temp_result += cvr->val[valID] * x_val;
             
-            #else
+        #else
 
-            //temp_result += __ldg(&cvr->val[valID]) * __ldg(&x[x_addr]);
-            temp_result += cvr->val[valID] * x[x_addr];
+        //temp_result += __ldg(&cvr->val[valID]) * __ldg(&x[x_addr]);
+        temp_result += cvr->val[valID] * x[x_addr];
             
-            #endif
+        #endif
 
-            int rec_pos = cvr->rec[recID].pos;
-            int writeback;
-            int rec_flag = 0;
-            while(rec_pos / THREADS_PER_WARP == i){
-                if(rec_pos % THREADS_PER_WARP == laneID){
-                    rec_flag = 1;
-                    writeback = cvr->rec[recID].wb;
-                }
-                recID++;
-                if(recID >= (warpID + 1) * n_warp_recs){
-                    break;
-                }
-                rec_pos = cvr->rec[recID].pos;
+        int rec_pos = cvr->rec[recID].pos;
+        int writeback;
+        int rec_flag = 0;
+        while(rec_pos / THREADS_PER_WARP == i){
+            if(rec_pos % THREADS_PER_WARP == laneID){
+                rec_flag = 1;
+                writeback = cvr->rec[recID].wb;
             }
+            recID++;
+            if(recID >= (warpID + 1) * n_warp_recs){
+                break;
+            }
+            rec_pos = cvr->rec[recID].pos;
+        }
             
-            // corresponding to tracker feeding stage
-            if(1 == rec_flag){
-                if(i < threshold){
+        // corresponding to tracker feeding stage
+        if(1 == rec_flag){
+            if(i < threshold){
+                if(writeback == warp_start_row){
+                    floatTypeAtomicAdd(&y[writeback], temp_result);
+                }else{
+                    y[writeback] += temp_result;
+                }
+                    
+            }else if(i == threshold){
+                int flag = cvr->threshold_detail[threadID];
+                if(0 == flag){
                     if(writeback == warp_start_row){
                         floatTypeAtomicAdd(&y[writeback], temp_result);
                     }else{
                         y[writeback] += temp_result;
-                    }
-                    
-                }else if(i == threshold){
-                    int flag = cvr->threshold_detail[threadID];
-                    if(0 == flag){
-                        if(writeback == warp_start_row){
-                            floatTypeAtomicAdd(&y[writeback], temp_result);
-                        }else{
-                            y[writeback] += temp_result;
-                        }
-                    }else{
-                        writeback = cvr->tail[writeback];
-                        if(-1 != writeback){
-                            floatTypeAtomicAdd(&y[writeback], temp_result);
-                        }
                     }
                 }else{
                     writeback = cvr->tail[writeback];
@@ -1237,24 +1228,28 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
                         floatTypeAtomicAdd(&y[writeback], temp_result);
                     }
                 }
-
-                temp_result = 0;
-                rec_flag = 0;
+            }else{
+                writeback = cvr->tail[writeback];
+                if(-1 != writeback){
+                    floatTypeAtomicAdd(&y[writeback], temp_result);
+                }
             }
+            temp_result = 0;
+            rec_flag = 0;
+        }
 
-            valID += THREADS_PER_WARP;
-        } // END FOR0
+        valID += THREADS_PER_WARP;
+    } // END FOR0
 
 
-      //if(0 == laneID){
-      //  floatTypeAtomicAdd(&y[warp_start_row], shared_y[0]);
-      //  floatTypeAtomicAdd(&y[warp_end_row], shared_y[warp_end_row-warp_start_row]);
-      //  #pragma unroll
-      //  for(int wb = warp_start_row + 1; wb < warp_end_row; wb++){
-      //      y[wb] += shared_y[wb-warp_start_row];
-      //  }
-      //}
-//    }// END IF0
+  //if(0 == laneID){
+  //  floatTypeAtomicAdd(&y[warp_start_row], shared_y[0]);
+  //  floatTypeAtomicAdd(&y[warp_end_row], shared_y[warp_end_row-warp_start_row]);
+  //  #pragma unroll
+  //  for(int wb = warp_start_row + 1; wb < warp_end_row; wb++){
+  //      y[wb] += shared_y[wb-warp_start_row];
+  //  }
+  //}
 }
 
 
