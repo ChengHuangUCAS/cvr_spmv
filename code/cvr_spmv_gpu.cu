@@ -926,7 +926,6 @@ __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const 
                         rowID = atomicAdd(&cur_row[warp_offset], 1);
                     }
                 }
-
                 // WHILE1: feeding/stealing one by one
                 while(0 == count_and[warp_offset]){
 
@@ -942,10 +941,10 @@ __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const 
                         // IF5 & ELSE1
                         if(cur_row[warp_offset] > warp_end_row){
                             cvr->tail[threadID] = rowID;
-                            rowID = threadID;
                             if(count == 0 && rowID <= warp_end_row){
                                 cvr->threshold_detail[threadID] = 0; // these threads can write to rec.wb directly in threshold loop
                             }
+                            rowID = threadID;
                         }
                     }// END IF4
 
@@ -1159,7 +1158,7 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     int recID = warpID * n_warp_recs;
     int threshold = cvr->rec_threshold[warpID];
     int x_addr, rec_pos, writeback, rec_flag, threshold_flag;
-    /*
+   /* 
     //FOR1
     for(int i = 0; i < n_steps; ){
         if(n_steps - i >= 32){
@@ -1276,7 +1275,7 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
         //** writeback: store cvr->rec.wb, address to write back
         //** offset: lane number of current record
         //
-        int x_addr = cvr->colidx[valID];
+        x_addr = cvr->colidx[valID];
 
         // ******** this is the core multiplication!!!!!!!!! ********
  
@@ -1298,9 +1297,8 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
             
         #endif
 
-        int rec_pos = cvr->rec[recID].pos;
-        int writeback;
-        int rec_flag = 0;
+        rec_pos = cvr->rec[recID].pos;
+        rec_flag = 0;
         while(rec_pos / THREADS_PER_WARP == i){
             if(rec_pos % THREADS_PER_WARP == laneID){
                 rec_flag = 1;
@@ -1323,8 +1321,8 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
                 }
                     
             }else if(i == threshold){
-                int flag = cvr->threshold_detail[threadID];
-                if(0 == flag){
+                threshold_flag = cvr->threshold_detail[threadID];
+                if(0 == threshold_flag){
                     if(writeback == warp_start_row){
                         floatTypeAtomicAdd(&y[writeback], temp_result);
                     }else{
