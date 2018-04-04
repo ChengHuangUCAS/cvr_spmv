@@ -12,10 +12,10 @@
 ** data.txt: matrix market format input file
 ** default parameters: 1 block, 32 threads per block, 1 iteration
 ** 
-** Default type of Matrix Market Format base: 0.
-**  If your file is 1-based, please change "#define COO_BASE 0" to 1.
-** Default float type: single-precision(float).
-**  If you need double-precision(double) type, please uncomment "#define DOUBLE".
+** Default Matrix Market Format store base: 0.
+**  If your file is 1-based, please change "#define COO_BASE 0" into 1.
+** Default float type: double-precision(double).
+**  If you need single-precision(float) type, please comment "#define DOUBLE".
 **
 ****************************************************/
 
@@ -104,7 +104,7 @@ typedef struct cvr{
     int *threshold_detail;      //this is new, because threshold is a bit more complicated in GPU version
     int *tail;                  //the last line number(e.g. write-back position, think about it) of each lane(or thread as you like)
     int *warp_start_row;
-    int *warp_end_row;
+    int *warp_nnz;
 }cvr_t; // compressed vactorization-oriented sparse row format
 
 
@@ -120,7 +120,7 @@ inline int func_cmp(const void *a, const void *b){
 }
 
 // auxiliary function to get row number, binary search
-__forceinline__ __device__ int func_get_row(int valID, csr_t *csr){
+__forceinline__ __device__ int func_get_row(int const valID, csr_t const __restrict__ *csr){
     int start = 0, end = csr->nrow;
     int mid = (start + end) / 2;
     while(start <= end){
@@ -141,7 +141,7 @@ __forceinline__ __device__ int func_get_row(int valID, csr_t *csr){
 }
 
 // auxiliary function to implement atomic add, GPUs whose compute capability is lower than 6.0 do not support atomic add for double variables
-__forceinline__ __device__ floatType floatTypeAtomicAdd(floatType *address, floatType val){
+__forceinline__ __device__ floatType floatTypeAtomicAdd(floatType const *address, floatType const val){
     #if __CUDA_ARCH__ >= 600
     return atomicAdd(address, val);
     #else
@@ -328,8 +328,7 @@ int main(int argc, char **argv){
 
     int n_warps = (n_threads + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
     int n_warp_nnz = h_csr->nnz / n_warps;
-    //int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-    int n_warp_vals = (n_warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+    int n_warp_vals = (n_warp_nnz + 1 + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
     int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
 
     int warps_per_block = threads_per_block / THREADS_PER_WARP;
@@ -347,7 +346,7 @@ int main(int argc, char **argv){
     CHECK(cudaMalloc(&temp_cvr.threshold_detail, n_threads * sizeof(int)));
     CHECK(cudaMalloc(&temp_cvr.tail, n_threads * sizeof(int)));
     CHECK(cudaMalloc(&temp_cvr.warp_start_row, n_warps * sizeof(int)));
-    CHECK(cudaMalloc(&temp_cvr.warp_end_row, n_warps * sizeof(int)));
+    CHECK(cudaMalloc(&temp_cvr.warp_nnz, n_warps * sizeof(int)));
 
     //initialize
     CHECK(cudaMemset(temp_cvr.rec, 0, n_warps * n_warp_recs * sizeof(record_t)));
@@ -817,8 +816,9 @@ __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const 
         **   n_warp_recs: upperbound of number of records needed to store, related to memory space allocation
         */
         //int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-        int n_warp_vals = (n_warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+        int n_warp_vals = (n_warp_nnz + 1 + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
         int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+        int n_steps = (warp_nnz + THREADS_PER_WARP - 1) / THREADS_PER_WARP; 
 
         /*
         ** Trackers
@@ -861,7 +861,7 @@ __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const 
             selected[warp_offset] = -1;
             cvr->rec_threshold[warpID] = -1;
             cvr->warp_start_row[warpID] = warp_start_row;
-            cvr->warp_end_row[warpID] = warp_end_row;
+            cvr->warp_nnz[warpID] = warp_nnz;
         }
         cvr->threshold_detail[threadID] = 1; // initially, no threads can write directly to rec.wb in threshold loop
 
@@ -904,7 +904,7 @@ __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const 
         } // END IF1
 
         // FOR1: preprocessing loop
-        for(int i = 0; i <= n_warp_vals / THREADS_PER_WARP; i++){
+        for(int i = 0; i <= n_steps; i++){
 
            if(0 == laneID){
                 count_and[warp_offset] = 1;
@@ -1136,9 +1136,9 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     int warp_start_row = cvr->warp_start_row[warpID];
 
     //int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-    int n_warp_vals = (cvr->nnz / n_warps + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-    int n_steps = n_warp_vals / THREADS_PER_WARP;
+    int n_warp_vals = (cvr->nnz / n_warps + 1 + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
     int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
+    int n_steps = (cvr->warp_nnz[warpID] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
 
     //floatType *shared_y = &shared_var[warp_offset * n_warp_recs];
     //int init_smem = laneID;
@@ -1158,16 +1158,124 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     int valID = warpID * n_warp_vals + laneID;
     int recID = warpID * n_warp_recs;
     int threshold = cvr->rec_threshold[warpID];
+    int x_addr, rec_pos, writeback, rec_flag, threshold_flag;
+    /*
+    //FOR1
+    for(int i = 0; i < n_steps; ){
+        if(n_steps - i >= 32){
+            #pragma unroll
+            for(int j = 0; j < 32; i++, j++){
+                x_addr = cvr->colidx[valID];
+                temp_result += cvr->val[valID] * x[x_addr];
+                rec_pos = cvr->rec[recID].pos;
+                rec_flag = 0;
+                while(rec_pos / THREADS_PER_WARP == i){
+                    if(rec_pos % THREADS_PER_WARP == laneID){
+                        rec_flag = 1;
+                        writeback = cvr->rec[recID].wb;
+                    }
+                    recID++;
+                    if(recID >= (warpID + 1) * n_warp_recs){
+                        break;
+                    }
+                    rec_pos = cvr->rec[recID].pos;
+                }
+                if(1 == rec_flag){
+                    if(i < threshold){
+                        if(writeback == warp_start_row){
+                            floatTypeAtomicAdd(&y[writeback], temp_result);
+                        }else{
+                            y[writeback] += temp_result;
+                        }
+                        
+                    }else if(i == threshold){
+                        threshold_flag = cvr->threshold_detail[threadID];
+                        if(0 == threshold_flag){
+                            if(writeback == warp_start_row){
+                                floatTypeAtomicAdd(&y[writeback], temp_result);
+                            }else{
+                                y[writeback] += temp_result;
+                            }
+                        }else{
+                            writeback = cvr->tail[writeback];
+                            if(-1 != writeback){
+                                floatTypeAtomicAdd(&y[writeback], temp_result);
+                            }
+                        }
+                    }else{
+                        writeback = cvr->tail[writeback];
+                        if(-1 != writeback){
+                            floatTypeAtomicAdd(&y[writeback], temp_result);
+                        }
+                    }
+                    temp_result = 0;
+                    rec_flag = 0;
+                }
+                valID += THREADS_PER_WARP;
+            }
+        }else{
+                x_addr = cvr->colidx[valID];
+                temp_result += cvr->val[valID] * x[x_addr];
+                rec_pos = cvr->rec[recID].pos;
+                rec_flag = 0;
+                while(rec_pos / THREADS_PER_WARP == i){
+                    if(rec_pos % THREADS_PER_WARP == laneID){
+                        rec_flag = 1;
+                        writeback = cvr->rec[recID].wb;
+                    }
+                    recID++;
+                    if(recID >= (warpID + 1) * n_warp_recs){
+                        break;
+                    }
+                    rec_pos = cvr->rec[recID].pos;
+                }
+                if(1 == rec_flag){
+                    if(i < threshold){
+                        if(writeback == warp_start_row){
+                            floatTypeAtomicAdd(&y[writeback], temp_result);
+                        }else{
+                            y[writeback] += temp_result;
+                        }
+                        
+                    }else if(i == threshold){
+                        threshold_flag = cvr->threshold_detail[threadID];
+                        if(0 == threshold_flag){
+                            if(writeback == warp_start_row){
+                                floatTypeAtomicAdd(&y[writeback], temp_result);
+                            }else{
+                                y[writeback] += temp_result;
+                            }
+                        }else{
+                            writeback = cvr->tail[writeback];
+                            if(-1 != writeback){
+                                floatTypeAtomicAdd(&y[writeback], temp_result);
+                            }
+                        }
+                    }else{
+                        writeback = cvr->tail[writeback];
+                        if(-1 != writeback){
+                            floatTypeAtomicAdd(&y[writeback], temp_result);
+                        }
+                    }
+                    temp_result = 0;
+                    rec_flag = 0;
+                }
+                valID += THREADS_PER_WARP;
+
+                i++;
+        }
+    } // END FOR1
+*/
 
     // FOR0
     #pragma unroll
     for(int i = 0; i < n_steps; i++){
-        /*
-        ** x_addr: offset of vector x
-        ** rec_pos: store cvr->rec.pos, used to calculate offset
-        ** writeback: store cvr->rec.wb, address to write back
-        ** offset: lane number of current record
-        */
+        //
+        //** x_addr: offset of vector x
+        //** rec_pos: store cvr->rec.pos, used to calculate offset
+        //** writeback: store cvr->rec.wb, address to write back
+        //** offset: lane number of current record
+        //
         int x_addr = cvr->colidx[valID];
 
         // ******** this is the core multiplication!!!!!!!!! ********
