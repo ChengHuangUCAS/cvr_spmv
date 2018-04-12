@@ -980,7 +980,7 @@ __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const 
                         // IF8: stealing
                         if(0 == average[warp_offset]){
                             if(i != n_warp_vals / THREADS_PER_WARP){
-                                printf("ERROR: *** last round of preprocessing is incorrect ***\n");
+                                //printf("ERROR: *** last round of preprocessing is incorrect ***\n");
                             }
                             break;
                         }else{
@@ -1158,113 +1158,7 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     int recID = warpID * n_warp_recs;
     int threshold = cvr->rec_threshold[warpID];
     int x_addr, rec_pos, writeback, rec_flag, threshold_flag;
-   /* 
-    //FOR1
-    for(int i = 0; i < n_steps; ){
-        if(n_steps - i >= 32){
-            #pragma unroll
-            for(int j = 0; j < 32; i++, j++){
-                x_addr = cvr->colidx[valID];
-                temp_result += cvr->val[valID] * x[x_addr];
-                rec_pos = cvr->rec[recID].pos;
-                rec_flag = 0;
-                while(rec_pos / THREADS_PER_WARP == i){
-                    if(rec_pos % THREADS_PER_WARP == laneID){
-                        rec_flag = 1;
-                        writeback = cvr->rec[recID].wb;
-                    }
-                    recID++;
-                    if(recID >= (warpID + 1) * n_warp_recs){
-                        break;
-                    }
-                    rec_pos = cvr->rec[recID].pos;
-                }
-                if(1 == rec_flag){
-                    if(i < threshold){
-                        if(writeback == warp_start_row){
-                            floatTypeAtomicAdd(&y[writeback], temp_result);
-                        }else{
-                            y[writeback] += temp_result;
-                        }
-                        
-                    }else if(i == threshold){
-                        threshold_flag = cvr->threshold_detail[threadID];
-                        if(0 == threshold_flag){
-                            if(writeback == warp_start_row){
-                                floatTypeAtomicAdd(&y[writeback], temp_result);
-                            }else{
-                                y[writeback] += temp_result;
-                            }
-                        }else{
-                            writeback = cvr->tail[writeback];
-                            if(-1 != writeback){
-                                floatTypeAtomicAdd(&y[writeback], temp_result);
-                            }
-                        }
-                    }else{
-                        writeback = cvr->tail[writeback];
-                        if(-1 != writeback){
-                            floatTypeAtomicAdd(&y[writeback], temp_result);
-                        }
-                    }
-                    temp_result = 0;
-                    rec_flag = 0;
-                }
-                valID += THREADS_PER_WARP;
-            }
-        }else{
-                x_addr = cvr->colidx[valID];
-                temp_result += cvr->val[valID] * x[x_addr];
-                rec_pos = cvr->rec[recID].pos;
-                rec_flag = 0;
-                while(rec_pos / THREADS_PER_WARP == i){
-                    if(rec_pos % THREADS_PER_WARP == laneID){
-                        rec_flag = 1;
-                        writeback = cvr->rec[recID].wb;
-                    }
-                    recID++;
-                    if(recID >= (warpID + 1) * n_warp_recs){
-                        break;
-                    }
-                    rec_pos = cvr->rec[recID].pos;
-                }
-                if(1 == rec_flag){
-                    if(i < threshold){
-                        if(writeback == warp_start_row){
-                            floatTypeAtomicAdd(&y[writeback], temp_result);
-                        }else{
-                            y[writeback] += temp_result;
-                        }
-                        
-                    }else if(i == threshold){
-                        threshold_flag = cvr->threshold_detail[threadID];
-                        if(0 == threshold_flag){
-                            if(writeback == warp_start_row){
-                                floatTypeAtomicAdd(&y[writeback], temp_result);
-                            }else{
-                                y[writeback] += temp_result;
-                            }
-                        }else{
-                            writeback = cvr->tail[writeback];
-                            if(-1 != writeback){
-                                floatTypeAtomicAdd(&y[writeback], temp_result);
-                            }
-                        }
-                    }else{
-                        writeback = cvr->tail[writeback];
-                        if(-1 != writeback){
-                            floatTypeAtomicAdd(&y[writeback], temp_result);
-                        }
-                    }
-                    temp_result = 0;
-                    rec_flag = 0;
-                }
-                valID += THREADS_PER_WARP;
 
-                i++;
-        }
-    } // END FOR1
-*/
 
     // FOR0
     #pragma unroll
