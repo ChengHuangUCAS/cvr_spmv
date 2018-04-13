@@ -230,7 +230,7 @@ int main(int argc, char **argv){
     //printf("Grid dimension: (%d, %d, %d)\n", griddim[0], griddim[1], griddim[2]);
     //printf("Block dimension: (%d, %d, %d)\n", blockdim[0], blockdim[1], blockdim[2]);
     //printf("Number of iterations: %d\n\n", n_iterations);
-    //printf("input:%s, <<<%d,%d>>>, iterations:%d\n", filename, griddim[0], blockdim[0], n_iterations);
+    printf("input:%s, <<<%d,%d>>>, iterations:%d\n", filename, griddim[0], blockdim[0], n_iterations);
 
     /****  \basic runtime information  ****/
 
@@ -305,9 +305,9 @@ int main(int argc, char **argv){
 //    printf("OK!\n\n");
     /****  \prepare host_x, device_x, host_y, device_y and verify_y  ****/
 
-//    struct timeval tv1, tv2;
-//    double tv_diff1, tv_diff2;
-//    gettimeofday(&tv1, NULL);
+    struct timeval tv1, tv2;
+    double tv_diff1, tv_diff2;
+    gettimeofday(&tv1, NULL);
 
     /****  prepare device_cvr  ****/
 //    printf("Preparing device_cvr...\n");
@@ -365,30 +365,30 @@ int main(int argc, char **argv){
         return ERROR;
     }
 
-//    gettimeofday(&tv2, NULL);
-//    tv_diff1 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
-    //printf("preprocess time: %lfms\n", tv_diff1/1000.0);
+    gettimeofday(&tv2, NULL);
+    tv_diff1 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+    printf("preprocess time: %lfms\n", tv_diff1/1000.0);
 
 
 
-//    gettimeofday(&tv1, NULL);
-    cudaEvent_t start_event, stop_event;
-    cudaEventCreate(&start_event);
-    cudaEventCreate(&stop_event);
-    cudaEventRecord(start_event, 0);
-    cudaDeviceSynchronize();
+    gettimeofday(&tv1, NULL);
+//    cudaEvent_t start_event, stop_event;
+//    cudaEventCreate(&start_event);
+//    cudaEventCreate(&stop_event);
+//    cudaEventRecord(start_event, 0);
+//    cudaDeviceSynchronize();
     // SPMV KERNEL
     if(spmv(d_y, d_x, d_cvr, d_csr, threads_per_block)){
         printf("ERROR occured in function spmv()\n");
         return ERROR;
     }
-    cudaEventRecord(stop_event, 0);
-    cudaEventSynchronize(stop_event);
-    float elapsedTime;
-    cudaEventElapsedTime(&elapsedTime, start_event, stop_event);
-//    gettimeofday(&tv2, NULL);
-//    tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
-    printf("spmv time: %fms\n", elapsedTime/n_iterations);
+//    cudaEventRecord(stop_event, 0);
+//    cudaEventSynchronize(stop_event);
+//    float elapsedTime;
+//    cudaEventElapsedTime(&elapsedTime, start_event, stop_event);
+    gettimeofday(&tv2, NULL);
+    tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+    printf("spmv time: %lfms\n", tv_diff2/1000.0/n_iterations);
 
     /****  \launch kernels  ****/
 
@@ -427,7 +427,7 @@ int main(int argc, char **argv){
 
     /****  compute y_verify using csr spmv  ****/
 
-//    gettimeofday(&tv1, NULL);
+    gettimeofday(&tv1, NULL);
 
     //for(int iteration = 0; iteration < n_iterations; iteration++){
         #pragma omp parallel for num_threads(24)
@@ -440,13 +440,13 @@ int main(int argc, char **argv){
               }
             }
             y_verify[i] += sum;
-//            printf("y[%d]=%f, y_v[%d]=%f\n", i, h_y[i], i, y_verify[i]);
+            //printf("y[%d]=%f, y_v[%d]=%f\n", i, h_y[i], i, y_verify[i]);
         }
     //}
 
-//    gettimeofday(&tv2, NULL);
-//    tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
-    //printf("cpu_spmv time: %lfms\n", tv_diff2/1000.0);
+    gettimeofday(&tv2, NULL);
+    tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+    printf("cpu_spmv time: %lfms\n", tv_diff2/1000.0);
 
     /****  \compute y_verify using csr spmv  ****/
 
@@ -1157,6 +1157,7 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     reg_cvr.warp_start_row = cvr->warp_start_row;
     reg_cvr.warp_nnz = cvr->warp_nnz;
 */
+
     int cvr_nnz = cvr->nnz;
     floatType *cvr_val = cvr->val;
     int *cvr_colidx = cvr->colidx;
@@ -1167,6 +1168,23 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     int *cvr_warp_start_row = cvr->warp_start_row;
     int *cvr_warp_nnz = cvr->warp_nnz;
 
+/*
+    __shared__ cvr_t shared_cvr;
+    if(0 == threadIdx.x){
+        shared_cvr.ncol = cvr->ncol;
+        shared_cvr.nrow = cvr->nrow;
+        shared_cvr.nnz = cvr->nnz;
+        shared_cvr.val = cvr->val;
+        shared_cvr.colidx = cvr->colidx;
+        shared_cvr.rec = cvr->rec;
+        shared_cvr.rec_threshold = cvr->rec_threshold;
+        shared_cvr.threshold_detail = cvr->threshold_detail;
+        shared_cvr.tail = cvr->tail;
+        shared_cvr.warp_start_row = cvr->warp_start_row;
+        shared_cvr.warp_nnz = cvr->warp_nnz;
+    }
+    __syncthreads();
+*/
     int warp_start_row = cvr_warp_start_row[warpID];
 
     //int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
@@ -1174,10 +1192,10 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
     int n_steps = (cvr_warp_nnz[warpID] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
 
-    //floatType *shared_y = &shared_var[warp_offset * n_warp_recs];
+    //floatType *cvr_y = &cvr_var[warp_offset * n_warp_recs];
     //int init_smem = laneID;
     //while(init_smem < n_warp_recs){
-    //    shared_y[init_smem] = 0;
+    //    cvr_y[init_smem] = 0;
     //    init_smem += THREADS_PER_WARP;
     //}
     //__syncthreads();
@@ -1208,23 +1226,23 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
 
         // ******** this is the core multiplication!!!!!!!!! ********
  
-//        #ifdef TEXTURE
+        #ifdef TEXTURE
             
-//        #ifdef DOUBLE
-//        int2 x_trans = tex1Dfetch(x_texRef, x_addr);
-//        floatType x_val = __hiloint2double(x_trans.y, x_trans.x);
-//        #else
-//        floatType x_val = tex1Dfetch(x_texRef, x_addr);
-//        #endif
+        #ifdef DOUBLE
+        int2 x_trans = tex1Dfetch(x_texRef, x_addr);
+        floatType x_val = __hiloint2double(x_trans.y, x_trans.x);
+        #else
+        floatType x_val = tex1Dfetch(x_texRef, x_addr);
+        #endif
 
-//        temp_result += cvr_val[valID] * x_val;
+        temp_result += cvr_val[valID] * x_val;
             
-//        #else
+        #else
 
         //temp_result += __ldg(&cvr->val[valID]) * __ldg(&x[x_addr]);
         temp_result += cvr_val[valID] * x[x_addr];
             
-//        #endif
+        #endif
 
         rec_pos = cvr_rec[recID].pos;
         rec_flag = 0;
@@ -1276,15 +1294,6 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
         valID += THREADS_PER_WARP;
     } // END FOR0
 
-
-  //if(0 == laneID){
-  //  floatTypeAtomicAdd(&y[warp_start_row], shared_y[0]);
-  //  floatTypeAtomicAdd(&y[warp_end_row], shared_y[warp_end_row-warp_start_row]);
-  //  #pragma unroll
-  //  for(int wb = warp_start_row + 1; wb < warp_end_row; wb++){
-  //      y[wb] += shared_y[wb-warp_start_row];
-  //  }
-  //}
 }
 
 
