@@ -203,6 +203,8 @@ int blockdim[3] = {32, 1, 1};
 
 int n_iterations = 1;
 
+__constant__ cvr_t const_cvr;
+
 int main(int argc, char **argv){
 
     /****  runtime configuration  ****/
@@ -350,9 +352,10 @@ int main(int argc, char **argv){
     CHECK(cudaMalloc(&temp_cvr.warp_nnz, n_warps * sizeof(int)));
 
     //initialize
-    CHECK(cudaMemset(temp_cvr.rec, 0, n_warps * n_warp_recs * sizeof(record_t)));
+    //CHECK(cudaMemset(temp_cvr.rec, 0, n_warps * n_warp_recs * sizeof(record_t)));
 
     CHECK(cudaMemcpy(d_cvr, &temp_cvr, sizeof(cvr_t), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpyToSymbol(const_cvr, &temp_cvr, sizeof(cvr_t)));
 
 //    printf("OK!\n\n");
     /****  \prepare device_cvr  ****/
@@ -440,7 +443,7 @@ int main(int argc, char **argv){
               }
             }
             y_verify[i] += sum;
-            //printf("y[%d]=%f, y_v[%d]=%f\n", i, h_y[i], i, y_verify[i]);
+//            printf("y[%d]=%f, y_v[%d]=%f\n", i, h_y[i], i, y_verify[i]);
         }
     //}
 
@@ -708,7 +711,7 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int warps_per_block){
     dim3 block(blockdim[0], blockdim[1], blockdim[2]);
 
     //int exe_config[2];
-    //cudaOccupancyMaxPotentialBlockSize(&exe_config[0], &exe_config[1], (void *)preprocess_kernel, 6*warps_per_block*sizeof(int));
+    //cudaOccupancyMaxPotentialBlockSize(&exe_config[0], &exe_config[1], (void *).preprocess_kernel, 6*warps_per_block*sizeof(int));
     //printf("runtime API suggests: %d blocks per grid, %d threads per block for preprocess . size of shared memory:%d\n", exe_config[0], exe_config[1], 6*warps_per_block*sizeof(int));
     
     preprocess_kernel<<<grid, block, 6*warps_per_block*sizeof(int)>>>(d_cvr, d_csr);
@@ -1143,73 +1146,66 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     int n_warps = (gridDim.x * blockDim.x + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
     //int n_warps = (gridDim.x * blockDim.x * blockDim.y + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
     int laneID = threadID % THREADS_PER_WARP;
-/*
+
     cvr_t reg_cvr;
-    reg_cvr.ncol = cvr->ncol;
-    reg_cvr.nrow = cvr->nrow;
-    reg_cvr.nnz = cvr->nnz;
-    reg_cvr.val = cvr->val;
-    reg_cvr.colidx = cvr->colidx;
-    reg_cvr.rec = cvr->rec;
-    reg_cvr.rec_threshold = cvr->rec_threshold;
-    reg_cvr.threshold_detail = cvr->threshold_detail;
-    reg_cvr.tail = cvr->tail;
-    reg_cvr.warp_start_row = cvr->warp_start_row;
-    reg_cvr.warp_nnz = cvr->warp_nnz;
+    reg_cvr.ncol = const_cvr.ncol;
+    reg_cvr.nrow = const_cvr.nrow;
+    reg_cvr.nnz = const_cvr.nnz;
+    reg_cvr.val = const_cvr.val;
+    reg_cvr.colidx = const_cvr.colidx;
+    reg_cvr.rec = const_cvr.rec;
+    reg_cvr.rec_threshold = const_cvr.rec_threshold;
+    reg_cvr.threshold_detail = const_cvr.threshold_detail;
+    reg_cvr.tail = const_cvr.tail;
+    reg_cvr.warp_start_row = const_cvr.warp_start_row;
+    reg_cvr.warp_nnz = const_cvr.warp_nnz;
+
+/*
+    int cvr_nnz = const_cvr.nnz;
+    floatType *cvr_val = const_cvr.val;
+    int *cvr_colidx = const_cvr.colidx;
+    record_t *cvr_rec = const_cvr.rec;
+    int *cvr_rec_threshold = const_cvr.rec_threshold;
+    int *cvr_threshold_detail = const_cvr.threshold_detail;
+    int *cvr_tail = const_cvr.tail;
+    int *cvr_warp_start_row = const_cvr.warp_start_row;
+    int *cvr_warp_nnz = const_cvr.warp_nnz;
 */
-
-    int cvr_nnz = cvr->nnz;
-    floatType *cvr_val = cvr->val;
-    int *cvr_colidx = cvr->colidx;
-    record_t *cvr_rec = cvr->rec;
-    int *cvr_rec_threshold = cvr->rec_threshold;
-    int *cvr_threshold_detail = cvr->threshold_detail;
-    int *cvr_tail = cvr->tail;
-    int *cvr_warp_start_row = cvr->warp_start_row;
-    int *cvr_warp_nnz = cvr->warp_nnz;
-
 /*
     __shared__ cvr_t shared_cvr;
     if(0 == threadIdx.x){
-        shared_cvr.ncol = cvr->ncol;
-        shared_cvr.nrow = cvr->nrow;
-        shared_cvr.nnz = cvr->nnz;
-        shared_cvr.val = cvr->val;
-        shared_cvr.colidx = cvr->colidx;
-        shared_cvr.rec = cvr->rec;
-        shared_cvr.rec_threshold = cvr->rec_threshold;
-        shared_cvr.threshold_detail = cvr->threshold_detail;
-        shared_cvr.tail = cvr->tail;
-        shared_cvr.warp_start_row = cvr->warp_start_row;
-        shared_cvr.warp_nnz = cvr->warp_nnz;
+        shared_cvr.ncol = const_cvr.ncol;
+        shared_cvr.nrow = const_cvr.nrow;
+        shared_cvr.nnz = const_cvr.nnz;
+        shared_cvr.val = const_cvr.val;
+        shared_cvr.colidx = const_cvr.colidx;
+        shared_cvr.rec = const_cvr.rec;
+        shared_cvr.rec_threshold = const_cvr.rec_threshold;
+        shared_cvr.threshold_detail = const_cvr.threshold_detail;
+        shared_cvr.tail = const_cvr.tail;
+        shared_cvr.warp_start_row = const_cvr.warp_start_row;
+        shared_cvr.warp_nnz = const_cvr.warp_nnz;
     }
     __syncthreads();
 */
-    int warp_start_row = cvr_warp_start_row[warpID];
+    int warp_start_row = reg_cvr.warp_start_row[warpID];
 
     //int n_warp_vals = ((n_warp_nnz + 1) + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
-    int n_warp_vals = (cvr_nnz / n_warps + 1 + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
+    int n_warp_vals = (reg_cvr.nnz / n_warps + 1 + THREADS_PER_WARP - 1) / THREADS_PER_WARP * THREADS_PER_WARP;
     int n_warp_recs = n_warp_vals + THREADS_PER_WARP;
-    int n_steps = (cvr_warp_nnz[warpID] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+    int n_steps = (reg_cvr.warp_nnz[warpID] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
 
-    //floatType *cvr_y = &cvr_var[warp_offset * n_warp_recs];
-    //int init_smem = laneID;
-    //while(init_smem < n_warp_recs){
-    //    cvr_y[init_smem] = 0;
-    //    init_smem += THREADS_PER_WARP;
-    //}
-    //__syncthreads();
         
     /*
     ** temp_result: temp result of current lane, write to y[] after finishing one row
-    ** valID: offset of cvr->val and cvr->colidx
-    ** recID: offset of cvr->rec, there is only one recID in one warp
-    ** threshold: store cvr->rec_threshold of current warp
+    ** valID: offset of reg_cvr.val and reg_cvr.colidx
+    ** recID: offset of reg_cvr.rec, there is only one recID in one warp
+    ** threshold: store reg_cvr.rec_threshold of current warp
     */
     floatType temp_result = 0;
     int valID = warpID * n_warp_vals + laneID;
     int recID = warpID * n_warp_recs;
-    int threshold = cvr_rec_threshold[warpID];
+    int threshold = reg_cvr.rec_threshold[warpID];
     int x_addr, rec_pos, writeback, rec_flag, threshold_flag;
 
 
@@ -1218,11 +1214,11 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     for(int i = 0; i < n_steps; i++){
         //
         //** x_addr: offset of vector x
-        //** rec_pos: store cvr->rec.pos, used to calculate offset
-        //** writeback: store cvr->rec.wb, address to write back
+        //** rec_pos: store reg_cvr.rec.pos, used to calculate offset
+        //** writeback: store reg_cvr.rec.wb, address to write back
         //** offset: lane number of current record
         //
-        x_addr = cvr_colidx[valID];
+        x_addr = reg_cvr.colidx[valID];
 
         // ******** this is the core multiplication!!!!!!!!! ********
  
@@ -1235,27 +1231,27 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
         floatType x_val = tex1Dfetch(x_texRef, x_addr);
         #endif
 
-        temp_result += cvr_val[valID] * x_val;
+        temp_result += reg_cvr.val[valID] * x_val;
             
         #else
 
-        //temp_result += __ldg(&cvr->val[valID]) * __ldg(&x[x_addr]);
-        temp_result += cvr_val[valID] * x[x_addr];
+        //temp_result += __ldg(&reg_cvr.val[valID]) * __ldg(&x[x_addr]);
+        temp_result += reg_cvr.val[valID] * x[x_addr];
             
         #endif
 
-        rec_pos = cvr_rec[recID].pos;
+        rec_pos = reg_cvr.rec[recID].pos;
         rec_flag = 0;
         while(rec_pos / THREADS_PER_WARP == i){
             if(rec_pos % THREADS_PER_WARP == laneID){
                 rec_flag = 1;
-                writeback = cvr_rec[recID].wb;
+                writeback = reg_cvr.rec[recID].wb;
             }
             recID++;
             if(recID >= (warpID + 1) * n_warp_recs){
                 break;
             }
-            rec_pos = cvr_rec[recID].pos;
+            rec_pos = reg_cvr.rec[recID].pos;
         }
             
         // corresponding to tracker feeding stage
@@ -1268,7 +1264,7 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
                 }
                     
             }else if(i == threshold){
-                threshold_flag = cvr_threshold_detail[threadID];
+                threshold_flag = reg_cvr.threshold_detail[threadID];
                 if(0 == threshold_flag){
                     if(writeback == warp_start_row){
                         floatTypeAtomicAdd(&y[writeback], temp_result);
@@ -1276,13 +1272,13 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
                         y[writeback] += temp_result;
                     }
                 }else{
-                    writeback = cvr_tail[writeback];
+                    writeback = reg_cvr.tail[writeback];
                     if(-1 != writeback){
                         floatTypeAtomicAdd(&y[writeback], temp_result);
                     }
                 }
             }else{
-                writeback = cvr_tail[writeback];
+                writeback = reg_cvr.tail[writeback];
                 if(-1 != writeback){
                     floatTypeAtomicAdd(&y[writeback], temp_result);
                 }
@@ -1294,6 +1290,15 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
         valID += THREADS_PER_WARP;
     } // END FOR0
 
+
+  //if(0 == laneID){
+  //  floatTypeAtomicAdd(&y[warp_start_row], shared_y[0]);
+  //  floatTypeAtomicAdd(&y[warp_end_row], shared_y[warp_end_row-warp_start_row]);
+  //  #pragma unroll
+  //  for(int wb = warp_start_row + 1; wb < warp_end_row; wb++){
+  //      y[wb] += shared_y[wb-warp_start_row];
+  //  }
+  //}
 }
 
 
