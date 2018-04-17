@@ -886,7 +886,7 @@ __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const 
         // initialize valID, rowID, count for preprocessing
         rowID = atomicAdd(&cur_row[warp_offset], 1);
         // empty rows
-        while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
+        while(rowID < warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
             rowID = atomicAdd(&cur_row[warp_offset], 1);
         }
 
@@ -941,7 +941,7 @@ __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const 
 
                     // omit empty rows and get a new row
                     rowID = atomicAdd(&cur_row[warp_offset], 1);
-                    while(rowID <= warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
+                    while(rowID < warp_end_row && csr->row_ptr[rowID+1] == csr->row_ptr[rowID]){
                         rowID = atomicAdd(&cur_row[warp_offset], 1);
                     }
                 }
