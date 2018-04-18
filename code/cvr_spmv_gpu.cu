@@ -184,9 +184,11 @@ int read_matrix(csr_t *csr, char *filename);
 int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps);
 // CVR format SpMV, y = y + M * x
 int spmv(floatType *d_y, floatType *d_x);
+int spmv2(floatType *d_y, floatType *d_x);
 
 __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const __restrict__ csr);
 __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x);
+__global__ void spmv2_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x);
 
 
 // however, in this implementation, only one dimension is used for intuition
@@ -241,6 +243,8 @@ int main(int argc, char **argv){
         return ERROR;
     }
 
+    printf("(%d, %d), %d nnz\n", h_csr->nrow, h_csr->ncol, h_csr->nnz);
+    
     /****  \prepare host_csr  ****/
 
 
@@ -371,9 +375,16 @@ int main(int argc, char **argv){
 //    cudaEventRecord(start_event, 0);
 //    cudaDeviceSynchronize();
     // SPMV KERNEL
-    if(spmv(d_y, d_x)){
-        printf("ERROR occured in function spmv()\n");
-        return ERROR;
+    if(h_csr->nrow < 5 * griddim[0] * blockdim[0]){
+        if(spmv(d_y, d_x)){
+            printf("ERROR occured in function spmv()\n");
+            return ERROR;
+        }
+    }else{
+        if(spmv2(d_y, d_x)){
+            printf("ERROR occured in function spmv()\n");
+            return ERROR;
+        }
     }
 //    cudaEventRecord(stop_event, 0);
 //    cudaEventSynchronize(stop_event);
@@ -742,6 +753,19 @@ int spmv(floatType *d_y, floatType *d_x){
     return OK;
 }
 
+int spmv2(floatType *d_y, floatType *d_x){
+    dim3 grid(griddim[0], griddim[1], griddim[2]);
+    dim3 block(blockdim[0], blockdim[1], blockdim[2]);
+
+    int iteration;
+    for(iteration = 0; iteration < n_iterations; iteration++){
+        spmv2_kernel<<<grid, block, blockdim[0] * sizeof(floatType)>>>(d_y, d_x);
+        CHECK(cudaGetLastError());
+    }
+    CHECK(cudaDeviceSynchronize());
+
+    return OK;
+}
 
 
 __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const __restrict__ csr){
@@ -1171,7 +1195,6 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     }
     __syncthreads();
 */
-    int warp_start_row = reg_cvr.warp_start_row[warpID];
 
     int n_steps_1 = (reg_cvr.nnz / n_warps + 1 + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
     int n_warp_vals = n_steps_1 * THREADS_PER_WARP;
@@ -1197,6 +1220,81 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
             if(0 != (rec->mask & lane_mask)){
                 writeback = rec->wb[laneID];
                 if((i < threshold) || (i == threshold && ((reg_cvr.threshold_detail[warpID] & lane_mask) == 0))){
+                    floatTypeAtomicAdd(&y[writeback], temp_result);
+//                    if(writeback == warp_start_row){
+//                        floatTypeAtomicAdd(&y[writeback], temp_result);
+//                    }else{
+//                        y[writeback] += temp_result;
+//                    }
+                }else{
+                    floatTypeAtomicAdd(&shared_y[writeback%blockDim.x], temp_result);
+                }
+                temp_result = 0;
+            }
+            recID++;
+        }
+
+        valID += THREADS_PER_WARP;
+    } // END FOR0
+
+    writeback2 = reg_cvr.tail[threadID];
+    
+    if(writeback2 != -1){
+        floatTypeAtomicAdd(&y[writeback2], shared_y[threadIdx.x]);
+    }
+
+}
+
+__global__ void spmv2_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x){
+    extern __shared__ floatType shared_y[];
+
+    int threadID = blockIdx.x * blockDim.x + threadIdx.x;
+    int warpID = threadID / THREADS_PER_WARP;
+    int n_warps = (gridDim.x * blockDim.x + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+    int laneID = threadID % THREADS_PER_WARP;
+    int lane_mask = 1 << laneID;
+
+    shared_y[threadIdx.x] = 0;
+
+    cvr_t reg_cvr;
+    reg_cvr.ncol = const_cvr.ncol;
+    reg_cvr.nrow = const_cvr.nrow;
+    reg_cvr.nnz = const_cvr.nnz;
+    reg_cvr.val = const_cvr.val;
+    reg_cvr.colidx = const_cvr.colidx;
+    reg_cvr.rec = const_cvr.rec;
+    reg_cvr.rec_threshold = const_cvr.rec_threshold;
+    reg_cvr.threshold_detail = const_cvr.threshold_detail;
+    reg_cvr.tail = const_cvr.tail;
+    reg_cvr.warp_start_row = const_cvr.warp_start_row;
+    reg_cvr.warp_nnz = const_cvr.warp_nnz;
+
+    int warp_start_row = reg_cvr.warp_start_row[warpID];
+
+    int n_steps_1 = (reg_cvr.nnz / n_warps + 1 + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+    int n_warp_vals = n_steps_1 * THREADS_PER_WARP;
+    int n_warp_recs = n_steps_1 + 1;
+    int n_steps = (reg_cvr.warp_nnz[warpID] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
+
+    floatType temp_result = 0;
+    int valID = warpID * n_warp_vals + laneID;
+    int recID = warpID * n_warp_recs;
+    int threshold = reg_cvr.rec_threshold[warpID];
+    int x_addr, writeback, writeback2 = -1;
+    record_t *rec;
+
+    // FOR0
+    #pragma unroll
+    for(int i = 0; i < n_steps; i++){
+        x_addr = reg_cvr.colidx[valID];
+        temp_result += reg_cvr.val[valID] * x[x_addr];
+            
+        rec = &reg_cvr.rec[recID];
+        if(rec->pos == i){
+            if(0 != (rec->mask & lane_mask)){
+                writeback = rec->wb[laneID];
+                if((i < threshold) || (i == threshold && ((reg_cvr.threshold_detail[warpID] & lane_mask) == 0))){
+                // ******* DIFFERENCE ********
                     if(writeback == warp_start_row){
                         floatTypeAtomicAdd(&y[writeback], temp_result);
                     }else{
@@ -1220,5 +1318,3 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     }
 
 }
-
-
