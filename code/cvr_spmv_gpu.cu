@@ -183,10 +183,10 @@ int read_matrix(csr_t *csr, char *filename);
 // CSR format -> CVR format
 int preprocess(cvr_t *d_cvr, csr_t *d_csr, int n_warps);
 // CVR format SpMV, y = y + M * x
-int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *csr, int threads_per_block);
+int spmv(floatType *d_y, floatType *d_x);
 
 __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const __restrict__ csr);
-__global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x, cvr_t * const __restrict__ cvr, csr_t * const __restrict__ csr, const int n_iterations);
+__global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x);
 
 
 // however, in this implementation, only one dimension is used for intuition
@@ -371,7 +371,7 @@ int main(int argc, char **argv){
 //    cudaEventRecord(start_event, 0);
 //    cudaDeviceSynchronize();
     // SPMV KERNEL
-    if(spmv(d_y, d_x, d_cvr, d_csr, threads_per_block)){
+    if(spmv(d_y, d_x)){
         printf("ERROR occured in function spmv()\n");
         return ERROR;
     }
@@ -718,7 +718,7 @@ int preprocess(cvr_t *d_cvr, csr_t *d_csr, int warps_per_block){
 **     floatType *d_x     initialized pointer(device) to store vector x
 **     cvr_t *d_cvr       allocated cvr_t pointer(device)
 */
-int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, int threads_per_block){
+int spmv(floatType *d_y, floatType *d_x){
 //    printf("Sparse Matrix-Vector multiply start.\n");
 
     dim3 grid(griddim[0], griddim[1], griddim[2]);
@@ -732,7 +732,7 @@ int spmv(floatType *d_y, floatType *d_x, cvr_t *d_cvr, csr_t *d_csr, int threads
     //FOR1
     //#pragma unroll
     for(iteration = 0; iteration < n_iterations; iteration++){
-        spmv_kernel<<<grid, block, blockdim[0] * sizeof(floatType)>>>(d_y, d_x, d_cvr, d_csr, n_iterations);
+        spmv_kernel<<<grid, block, blockdim[0] * sizeof(floatType)>>>(d_y, d_x);
         CHECK(cudaGetLastError());
 //        CHECK(cudaDeviceSynchronize());
     } //ENDFOR1: iteration
@@ -1130,7 +1130,7 @@ __global__ void preprocess_kernel(cvr_t * const __restrict__ cvr, csr_t * const 
 }
 
 
-__global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x, cvr_t * const __restrict__ cvr, csr_t * const __restrict__ csr, const int n_iterations){
+__global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x){
     extern __shared__ floatType shared_y[];
 
     int threadID = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1153,7 +1153,6 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     reg_cvr.tail = const_cvr.tail;
     reg_cvr.warp_start_row = const_cvr.warp_start_row;
     reg_cvr.warp_nnz = const_cvr.warp_nnz;
-
 
 /*
     __shared__ cvr_t shared_cvr;
