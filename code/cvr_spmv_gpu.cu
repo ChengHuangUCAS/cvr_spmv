@@ -9,8 +9,8 @@
 ** default parameters: 1 block, 32 threads per block, 1 iteration
 ** default compute capability 5.2 (Maxwell)
 ** 
-** Default Matrix Market Format store base: 0.
-**  If your file is 1-based, please change "#define COO_BASE 0" into 1.
+** Default Matrix Market Format store base: 1.
+**  If your file is 0-based, please change "#define COO_BASE 1" into 0.
 ** Default float type: double-precision(double).
 **  If you need single-precision(float) type, please comment "#define DOUBLE".
 **
@@ -31,7 +31,7 @@
 #define CMP_EQUAL 0
 
 #define FIELD_LENGTH 128
-#define COO_BASE 0
+#define COO_BASE 1
 
 #define OMP_THREADS 12
 
@@ -101,7 +101,6 @@ typedef struct cvr{
     int *rec_threshold;         //i don't know how to describe this, if you've read the paper, this is lr_rec in the paper
     int *threshold_detail;      //this is new, because threshold is a bit more complicated in GPU version
     int *tail;                  //the last line number(e.g. write-back position, think about it) of each lane(or thread as you like)
-    int *warp_start_row;
     int *warp_nnz;
 }cvr_t; // compressed vactorization-oriented sparse row format
 
@@ -212,7 +211,7 @@ __forceinline__ __device__ int func_reduceSel(bool sel){
 
 // auxiliary function to compare result
 inline int func_compare(floatType y, floatType y_verify){
-    if(abs(y-y_verify) > abs(0.01*y_verify)){
+    if(abs(y-y_verify) > 0.00001){
         return 1;
     }else{
         return 0;
@@ -224,9 +223,9 @@ inline void func_initialData(floatType *ip, int size){
     time_t t;
     srand((unsigned)time(&t));
     for(int i = 0; i < size; i++)    {
-        ip[i] = (floatType)(rand() & 0xff) / 10.0f;
+        //ip[i] = (floatType)(rand() & 0xff) / 10.0f;
         //ip[i] = i % 10;
-        //ip[i] = 1;
+        ip[i] = 1;
     }
 }
 
@@ -236,11 +235,9 @@ int read_matrix(csr_t *csr, char *filename);
 int preprocess();
 // CVR format SpMV, y = y + M * x
 int spmv(floatType *d_y, floatType *d_x);
-int spmv2(floatType *d_y, floatType *d_x);
 
 __global__ void preprocess_kernel();
 __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x);
-__global__ void spmv2_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x);
 
 
 // In this implementation, only one dimension is used for intuition
@@ -336,13 +333,8 @@ int main(int argc, char **argv){
     /****  \prepare host_x, device_x, host_y, device_y and verify_y  ****/
 
 
-    /****  preprocess time  ****/
 
-    struct timeval tv1, tv2;
-    double tv_diff1, tv_diff2;
-    gettimeofday(&tv1, NULL);
-
-    cvr_t temp_cvr;
+        cvr_t temp_cvr;
     //cvr structure is dependent on matrix and runtime configuration
     int n_threads = grid_dim * block_dim;
     int n_warps = n_threads / THREADS_PER_WARP;
@@ -364,12 +356,22 @@ int main(int argc, char **argv){
     CHECK(cudaMalloc(&temp_cvr.rec_threshold, n_warps * sizeof(int)));
     CHECK(cudaMalloc(&temp_cvr.threshold_detail, n_warps * sizeof(int)));
     CHECK(cudaMalloc(&temp_cvr.tail, n_threads * sizeof(int)));
-    CHECK(cudaMalloc(&temp_cvr.warp_start_row, n_warps * sizeof(int)));
     CHECK(cudaMalloc(&temp_cvr.warp_nnz, n_warps * sizeof(int)));
 
     //initialize
     CHECK(cudaMemset(temp_cvr.tail, -1, n_threads * sizeof(int)));
     CHECK(cudaMemcpyToSymbol(const_cvr, &temp_cvr, sizeof(cvr_t)));
+
+    // warming up
+    if(preprocess()){
+        printf("ERROR occured while warming up\n");
+        return ERROR;
+    }
+
+    /****  preprocess time  ****/
+    struct timeval tv1, tv2;
+    double tv_diff1, tv_diff2;
+    gettimeofday(&tv1, NULL);
 
 
     // PREPROCESS KERNEL
@@ -389,16 +391,9 @@ int main(int argc, char **argv){
 
     gettimeofday(&tv1, NULL);
     // SPMV KERNEL, deciding which branch to take here for performance considering
-    if(h_csr->nrow < 3 * grid_dim * block_dim){
-        if(spmv(d_y, d_x)){
-            printf("ERROR occured in function spmv()\n");
-            return ERROR;
-        }
-    }else{
-        if(spmv2(d_y, d_x)){
-            printf("ERROR occured in function spmv()\n");
-            return ERROR;
-        }
+    if(spmv(d_y, d_x)){
+        printf("ERROR occured in function spmv()\n");
+        return ERROR;
     }
     gettimeofday(&tv2, NULL);
     tv_diff2 = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
@@ -425,6 +420,7 @@ int main(int argc, char **argv){
     CHECK(cudaFree(temp_cvr.rec_threshold));
     CHECK(cudaFree(temp_cvr.threshold_detail));
     CHECK(cudaFree(temp_cvr.tail));
+    CHECK(cudaFree(temp_cvr.warp_nnz));
 
     CHECK(cudaFree(temp_csr.val));
     CHECK(cudaFree(temp_csr.col_idx));
@@ -690,7 +686,7 @@ int read_matrix(csr_t *csr, char *filename){
 */
 int preprocess(){
 
-    int warps_per_block = blockdim[0] / THREADS_PER_WARP;
+    int warps_per_block = block_dim / THREADS_PER_WARP;
 
     //shared memory allocate for cur_row[] and reg_flag[]
     preprocess_kernel<<<grid_dim, block_dim, 2 * warps_per_block * sizeof(int)>>>();
@@ -714,19 +710,7 @@ int spmv(floatType *d_y, floatType *d_x){
     int iteration;
     for(iteration = 0; iteration < n_iterations; iteration++){
         //shared memory allocate for temp result (reducing global write)
-        spmv_kernel<<<grid_dim, block_dim, blockdim * sizeof(floatType)>>>(d_y, d_x);
-        CHECK(cudaGetLastError());
-    }
-    CHECK(cudaDeviceSynchronize());
-
-    return OK;
-}
-
-int spmv2(floatType *d_y, floatType *d_x){
-
-    int iteration;
-    for(iteration = 0; iteration < n_iterations; iteration++){
-        spmv2_kernel<<<grid_dim, block_dim, block_dim * sizeof(floatType)>>>(d_y, d_x);
+        spmv_kernel<<<grid_dim, block_dim, block_dim * sizeof(floatType)>>>(d_y, d_x);
         CHECK(cudaGetLastError());
     }
     CHECK(cudaDeviceSynchronize());
@@ -766,7 +750,6 @@ __global__ void preprocess_kernel(){
     reg_cvr.rec_threshold = const_cvr.rec_threshold;
     reg_cvr.threshold_detail = const_cvr.threshold_detail;
     reg_cvr.tail = const_cvr.tail;
-    reg_cvr.warp_start_row = const_cvr.warp_start_row;
     reg_cvr.warp_nnz = const_cvr.warp_nnz;
 
     // non-zero id
@@ -803,11 +786,11 @@ __global__ void preprocess_kernel(){
     // track non-zero/row id in csr
     int valID, rowID, count, candi_valID;
     // record write-back information
-    int recID = warpID * up_warp_recs;
+    int recID = warpID * ub_warp_recs;
     // reduction and/add/select in a warp
     int count_res, average_res, candidate_res, stealer_res;
     // base address to write in cvr
-    int warp_gather_base = warpID * up_warp_vals;
+    int warp_gather_base = warpID * ub_warp_vals;
     __shared__ int *cur_row, *rec_flag;
     bool rec_bit = 0;
 
@@ -823,7 +806,6 @@ __global__ void preprocess_kernel(){
         rec_flag[warp_offset] = 0;
         reg_cvr.rec_threshold[warpID] = -1;
         reg_cvr.threshold_detail[warpID] = 0xffffffff;// initially, no threads can write directly to rec.wb in threshold loop
-        reg_cvr.warp_start_row[warpID] = warp_start_row;
         reg_cvr.warp_nnz[warpID] = warp_nnz;
     }
 
@@ -1015,7 +997,6 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     reg_cvr.rec_threshold = const_cvr.rec_threshold;
     reg_cvr.threshold_detail = const_cvr.threshold_detail;
     reg_cvr.tail = const_cvr.tail;
-    reg_cvr.warp_start_row = const_cvr.warp_start_row;
     reg_cvr.warp_nnz = const_cvr.warp_nnz;
 
     // upperbound of needed loop iterations to finish preprocess/multiplication
@@ -1031,9 +1012,10 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     int threshold = reg_cvr.rec_threshold[warpID];
     int x_addr, writeback, writeback2 = -1;
     record_t *rec;
-
+ 
     // FOR0
     for(int i = 0; i < n_steps; i++){
+ 
         x_addr = reg_cvr.colidx[valID];
         // ******** this is the core multiplication!!!!!!!!! ********
         temp_result += reg_cvr.val[valID] * x[x_addr];
@@ -1044,15 +1026,9 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
                 writeback = rec->wb[laneID];
                 if((i < threshold) || (i == threshold && ((reg_cvr.threshold_detail[warpID] & lane_mask) == 0))){
                     func_floatTypeAtomicAdd(&y[writeback], temp_result);
-                    // If the number of atomic writes is fairly small(e.g. less than 3 per thread), 
-                    //   use atomic write directly instead of following commented code to reduce costs.
-                    //if(writeback == warp_start_row){
-                    //    func_floatTypeAtomicAdd(&y[writeback], temp_result);
-                    //}else{
-                    //    y[writeback] += temp_result;
-                    //}
                 }else{
                     func_floatTypeAtomicAdd(&shared_y[writeback%blockDim.x], temp_result);
+ 
                 }
                 temp_result = 0;
             }
@@ -1066,79 +1042,8 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
     
     if(writeback2 != -1){
         func_floatTypeAtomicAdd(&y[writeback2], shared_y[threadIdx.x]);
+ 
     }
 
 }
 
-__global__ void spmv2_kernel(floatType * const __restrict__ y, floatType * const __restrict__ x){
-    extern __shared__ floatType shared_y[];
-
-    int threadID = blockIdx.x * blockDim.x + threadIdx.x;
-    int warpID = threadID / THREADS_PER_WARP;
-    int n_warps = (gridDim.x * blockDim.x + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
-    int laneID = threadID % THREADS_PER_WARP;
-    int lane_mask = 1 << laneID;
-
-    shared_y[threadIdx.x] = 0;
-
-    cvr_t reg_cvr;
-    reg_cvr.ncol = const_cvr.ncol;
-    reg_cvr.nrow = const_cvr.nrow;
-    reg_cvr.nnz = const_cvr.nnz;
-    reg_cvr.val = const_cvr.val;
-    reg_cvr.colidx = const_cvr.colidx;
-    reg_cvr.rec = const_cvr.rec;
-    reg_cvr.rec_threshold = const_cvr.rec_threshold;
-    reg_cvr.threshold_detail = const_cvr.threshold_detail;
-    reg_cvr.tail = const_cvr.tail;
-    reg_cvr.warp_start_row = const_cvr.warp_start_row;
-    reg_cvr.warp_nnz = const_cvr.warp_nnz;
-
-    int warp_start_row = reg_cvr.warp_start_row[warpID];
-
-    int ub_steps = (reg_cvr.nnz / n_warps + 1 + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
-    int ub_warp_vals = ub_steps * THREADS_PER_WARP;
-    int ub_warp_recs = ub_steps + 1;
-    int n_steps = (reg_cvr.warp_nnz[warpID] + THREADS_PER_WARP - 1) / THREADS_PER_WARP;
-
-    floatType temp_result = 0;
-    int valID = warpID * ub_warp_vals + laneID;
-    int recID = warpID * ub_warp_recs;
-    int threshold = reg_cvr.rec_threshold[warpID];
-    int x_addr, writeback, writeback2 = -1;
-    record_t *rec;
-
-    // FOR0
-    for(int i = 0; i < n_steps; i++){
-        x_addr = reg_cvr.colidx[valID];
-        temp_result += reg_cvr.val[valID] * x[x_addr];
-            
-        rec = &reg_cvr.rec[recID];
-        if(rec->pos == i){
-            if(0 != (rec->mask & lane_mask)){
-                writeback = rec->wb[laneID];
-                if((i < threshold) || (i == threshold && ((reg_cvr.threshold_detail[warpID] & lane_mask) == 0))){
-                // ******* DIFFERENCE ********
-                    if(writeback == warp_start_row){
-                        func_floatTypeAtomicAdd(&y[writeback], temp_result);
-                    }else{
-                        y[writeback] += temp_result;
-                    }
-                }else{
-                    func_floatTypeAtomicAdd(&shared_y[writeback%blockDim.x], temp_result);
-                }
-                temp_result = 0;
-            }
-            recID++;
-        }
-
-        valID += THREADS_PER_WARP;
-    } // END FOR0
-
-    writeback2 = reg_cvr.tail[threadID];
-    
-    if(writeback2 != -1){
-        func_floatTypeAtomicAdd(&y[writeback2], shared_y[threadIdx.x]);
-    }
-
-}
