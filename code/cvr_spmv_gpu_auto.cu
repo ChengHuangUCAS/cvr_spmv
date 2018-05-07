@@ -4,9 +4,9 @@
 **
 ** run:
 **      $ make
-**      $ ./cvr_spmv_gpu data.txt [#blocks #threads [#n_iterations]]
+**      $ ./cvr_spmv_gpu data.txt [#blocks #threads] [#n_iterations]
 ** data.txt: matrix market format input file
-** default parameters: 1 block, 32 threads per block, 1 iteration
+** default parameters: # of blocks and threads per block: autoselect, 1000 iteration
 ** default compute capability 5.2 (Maxwell)
 ** 
 ** Default Matrix Market Format store base: 1.
@@ -24,6 +24,8 @@
 #include<sys/time.h>
 
 #include<cuda_runtime.h>
+
+#include<math.h>
 
 #define OK 0
 #define ERROR -1
@@ -241,10 +243,10 @@ __global__ void spmv_kernel(floatType * const __restrict__ y, floatType * const 
 
 
 // In this implementation, only one dimension is used for intuition
-int grid_dim = 1;
-int block_dim = 32;
+int grid_dim = 32;
+int block_dim = 64;
 
-int n_iterations = 1;
+int n_iterations = 1000;
 
 __constant__ csr_t const_csr;
 __constant__ cvr_t const_cvr;
@@ -258,16 +260,6 @@ int main(int argc, char **argv){
         return ERROR;
     }
     char *filename = argv[1];
-
-    if(argc > 2){
-        grid_dim = atoi(argv[2]);
-        block_dim = atoi(argv[3]);
-        if(5 == argc){
-            n_iterations = atoi(argv[4]);
-        }
-    }
-
-    printf("Matrix file:%s. Execution config:<<<%d,%d>>>. Iterations:%d.\n", filename, grid_dim, block_dim, n_iterations);
 
     /****  \runtime configuration  ****/
 
@@ -287,6 +279,24 @@ int main(int argc, char **argv){
     printf("Matrix: (%d, %d), %d non-zeros.\n", h_csr->nrow, h_csr->ncol, h_csr->nnz);
     
     /****  \prepare host_csr  ****/
+
+    int total_threads = floor(0.0591 * h_csr->nnz + 116038);
+    int floor1 = floor(24.094 * pow(h_csr->nrow, 0.2423));
+    block_dim = min(1024, max(64, floor1 - floor1 % 32));
+    grid_dim = min(1024, max(32, total_threads / block_dim + total_threads / block_dim % 2));
+
+    if(argc == 3){
+        n_iterations = atoi(argv[2]);
+    }else if(argc == 4){
+        grid_dim = atoi(argv[2]);
+        block_dim = atoi(argv[3]);
+    }else if(argc == 5){
+        grid_dim = atoi(argv[2]);
+        block_dim = atoi(argv[3]);
+        n_iterations = atoi(argv[4]);
+    }
+
+    printf("Matrix file:%s. Execution config:<<<%d,%d>>>. Iterations:%d.\n", filename, grid_dim, block_dim, n_iterations);
 
 
     /****  prepare device_csr  ****/
